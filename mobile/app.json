@@ -1,0 +1,32 @@
+{
+  "expo": {
+    "name": "Agent Client",
+    "slug": "agent-client-mockup",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "scheme": "agentclient",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": false,
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "dev.simplist.agentclient.mockup"
+    },
+    "android": {
+      "package": "dev.simplist.agentclient.mockup",
+      "adaptiveIcon": {
+        "backgroundColor": "#2563EB"
+      }
+    },
+    "web": {
+      "bundler": "metro",
+      "output": "static"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-secure-store"
+    ],
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}
