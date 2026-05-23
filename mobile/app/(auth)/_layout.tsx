@@ -1,10 +1,22 @@
-/**
- * Auth route group — phone (S-02) / OTP (S-03) ship in M1 sub 2 (BIZ-270).
- * Foundation only declares the empty stack so Splash can route to `(auth)`
- * once the auth store hydrates.
- */
 import { Stack } from 'expo-router';
+import { useTheme } from '@/ui/theme/ThemeProvider';
 
 export default function AuthLayout() {
-  return <Stack screenOptions={{ headerShown: false }} />;
+  const { color } = useTheme();
+  return (
+    <Stack
+      screenOptions={{
+        headerStyle: { backgroundColor: color('surface') },
+        headerTintColor: color('text-primary'),
+        headerTitleStyle: { fontWeight: '600' },
+        contentStyle: { backgroundColor: color('surface') },
+      }}
+    >
+      <Stack.Screen name="phone" options={{ title: '로그인', headerShown: false }} />
+      <Stack.Screen
+        name="otp"
+        options={{ title: '인증번호 입력', headerBackButtonDisplayMode: 'minimal' }}
+      />
+    </Stack>
+  );
 }
