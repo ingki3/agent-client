@@ -6,6 +6,7 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import '@/i18n';
 import { useAuthStore } from '@/application/stores/auth';
+import { computeProtectedRoute } from '@/ui/navigation/protected-route';
 import { ThemeProvider, useTheme } from '@/ui/theme/ThemeProvider';
 
 function useProtectedRoute() {
@@ -14,14 +15,8 @@ function useProtectedRoute() {
   const router = useRouter();
 
   useEffect(() => {
-    if (status === 'initializing') return;
-    const inAuthGroup = segments[0] === '(auth)';
-    if (status === 'auth' && inAuthGroup) {
-      router.replace('/(main)/buddies');
-    } else if (status !== 'auth' && !inAuthGroup) {
-      // guest or awaiting_code → must be in (auth) flow
-      router.replace('/(auth)/phone');
-    }
+    const target = computeProtectedRoute(status, segments);
+    if (target !== null) router.replace(target);
   }, [status, segments, router]);
 }
 
