@@ -95,16 +95,17 @@ module.exports = {
     },
     {
       /**
-       * BIZ-230 mockup screens (moved into `(main)/` by BIZ-268 foundation)
-       * still use inline FlatList renderItem components. They are scheduled to
-       * be rewritten to the TECH §2.2 layout in M1 sub 4 / sub 5 / sub 6.
-       * Until then, suppress the unstable-nested-components warning here only.
+       * `(main)` screens use the expo-router `headerLeft` / `headerRight`
+       * render-prop pattern, which ESLint flags as an "unstable nested
+       * component" even though it is the documented API. Mockup screens
+       * (inbox / chat) additionally use inline FlatList renderItems pending
+       * BIZ-266 / BIZ-267 cleanup. Suppress the rule for this group only.
        */
       files: [
         'app/(main)/inbox.tsx',
         'app/(main)/buddies.tsx',
         'app/(main)/chat/**',
-        'app/(main)/add-buddy.tsx',
+        'app/(main)/add-buddy/**',
       ],
       rules: {
         'react/no-unstable-nested-components': 'off',
