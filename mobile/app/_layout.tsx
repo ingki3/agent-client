@@ -9,6 +9,8 @@ import { useAuthStore } from '@/application/stores/auth';
 import { computeProtectedRoute } from '@/ui/navigation/protected-route';
 import { ThemeProvider, useTheme } from '@/ui/theme/ThemeProvider';
 
+import { initNetworkRuntime } from './_runtime/network';
+
 function useProtectedRoute() {
   const status = useAuthStore((s) => s.status);
   const segments = useSegments();
@@ -39,6 +41,7 @@ export default function RootLayout() {
   const bootstrap = useAuthStore((s) => s.bootstrap);
   useEffect(() => {
     void bootstrap();
+    initNetworkRuntime();
   }, [bootstrap]);
 
   return (
