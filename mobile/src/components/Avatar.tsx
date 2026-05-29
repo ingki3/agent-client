@@ -1,7 +1,7 @@
 import { View, Text, type ViewStyle } from "react-native";
 import { useTheme } from "@/design/theme";
 import { fontSize, radius } from "@/design/tokens";
-import type { AccentSlot } from "@/mock/fixtures";
+import type { AccentSlot } from "@/domain/entities";
 
 export function Avatar({
   name,

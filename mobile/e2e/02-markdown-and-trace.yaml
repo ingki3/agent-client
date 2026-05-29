@@ -1,0 +1,23 @@
+# USER_FLOW §3.4/§3.5 — GFM 마크다운 렌더 + trace 패널 펼침 + M-01 원본 JSON(민감값 마스킹).
+appId: dev.simplist.agentclient.mockup
+---
+- launchApp:
+    clearState: true
+- runFlow: subflows/login.yaml
+- tapOn: "Work Buddy"
+- tapOn:
+    id: "chatInput"
+- inputText: "이번 분기 매출 표랑 코드 예시까지 정리해줘" # >14자 → 리치 마크다운 응답
+- tapOn:
+    id: "chatSend"
+# Rich reply contains an H2 heading rendered by the markdown renderer.
+- extendedWaitUntil:
+    visible: "핵심 요약"
+    timeout: 15000
+- assertVisible: "단계" # trace summary chip (collapsed)
+- tapOn: "단계" # expand the trace panel (I-01)
+- assertVisible: "요청 의도 분석" # thinking node
+- assertVisible: "search_context" # tool_call node
+- tapOn: "search_context" # open M-01 raw JSON
+- assertVisible: "••••••••" # api_key masked (FR-19 / Q7)
+- tapOn: "닫기"

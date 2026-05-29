@@ -1,0 +1,19 @@
+# USER_FLOW §3.1 — 신규 가입 → 첫 채팅 (mock buddy). Validates auth + send + streamed reply.
+appId: dev.simplist.agentclient.mockup
+---
+- launchApp:
+    clearState: true
+- runFlow: subflows/login.yaml
+- tapOn: "Work Buddy"
+- assertVisible:
+    id: "chatInput"
+- tapOn:
+    id: "chatInput"
+- inputText: "안녕"
+- tapOn:
+    id: "chatSend"
+- assertVisible: "안녕" # optimistic user bubble
+# Agent reply streams in; Work Buddy supports trace, so the summary chip appears.
+- extendedWaitUntil:
+    visible: "단계"
+    timeout: 15000

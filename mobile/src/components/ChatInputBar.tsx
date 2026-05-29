@@ -66,6 +66,7 @@ export function ChatInputBar({
         }}
       >
         <TextInput
+          testID="chatInput"
           value={value}
           onChangeText={setValue}
           placeholder={placeholder}
@@ -83,6 +84,7 @@ export function ChatInputBar({
       </View>
 
       <Pressable
+        testID="chatSend"
         onPress={handleSend}
         disabled={!canSend}
         accessibilityRole="button"

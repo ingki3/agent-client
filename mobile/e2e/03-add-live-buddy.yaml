@@ -1,0 +1,28 @@
+# USER_FLOW §3.3 — 봇 토큰으로 실제 버디 추가 (라이브 getMe).
+# Token is passed as an env var so no secret is committed:
+#   maestro test -e BOT_TOKEN=123456789:ABC... e2e/03-add-live-buddy.yaml
+# Requires network access to the configured gateway (default api.telegram.org).
+appId: dev.simplist.agentclient.mockup
+tags:
+  - live
+---
+- launchApp:
+    clearState: true
+- runFlow: subflows/login.yaml
+- tapOn:
+    id: "fabAddBuddy"
+- assertVisible: "친구 추가"
+- tapOn:
+    id: "tokenInput"
+- inputText: ${BOT_TOKEN}
+- tapOn: "다음"
+# getMe success → preview screen (S-13) with the confirm button.
+- extendedWaitUntil:
+    visible:
+      id: "confirmAdd"
+    timeout: 15000
+- tapOn:
+    id: "confirmAdd"
+# Lands in the new chat.
+- assertVisible:
+    id: "chatInput"

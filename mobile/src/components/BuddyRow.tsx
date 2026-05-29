@@ -1,7 +1,7 @@
 import { View, Text, Pressable } from "react-native";
 import { useTheme } from "@/design/theme";
 import { fontSize, radius, space } from "@/design/tokens";
-import type { Buddy } from "@/mock/fixtures";
+import type { Buddy } from "@/domain/entities";
 import { Avatar } from "./Avatar";
 import { UnreadBadge } from "./Badge";
 
@@ -20,16 +20,20 @@ function formatRelative(iso: string) {
 export function BuddyRow({
   buddy,
   onPress,
+  onLongPress,
   variant = "inbox",
 }: {
   buddy: Buddy;
   onPress?: () => void;
+  onLongPress?: () => void;
   variant?: "inbox" | "list";
 }) {
   const { color } = useTheme();
   return (
     <Pressable
       onPress={onPress}
+      onLongPress={onLongPress}
+      delayLongPress={350}
       accessibilityRole="button"
       accessibilityLabel={`${buddy.displayName} 채팅 열기`}
       style={({ pressed }) => ({

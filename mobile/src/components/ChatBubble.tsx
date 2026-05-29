@@ -1,37 +1,45 @@
-import { View, Text } from "react-native";
+/**
+ * Chat bubble (FR-11~15, FR-17). User text is rendered plain; agent text goes through
+ * the GFM markdown renderer with the safe-incremental policy while streaming. The
+ * trace panel (I-01) is attached under agent messages that carry a trace.
+ */
+import { View, Text, Pressable } from "react-native";
 import { useTheme } from "@/design/theme";
 import { fontSize, radius, space } from "@/design/tokens";
-import type { Message } from "@/mock/fixtures";
+import type { Message, MessageStatus } from "@/domain/entities";
+import { Markdown } from "@/ui/markdown/Markdown";
+import { TracePanel } from "@/ui/components/TracePanel";
 
-const STATUS_LABEL: Record<NonNullable<Message["status"]>, string> = {
+const STATUS_LABEL: Record<MessageStatus, string> = {
   sending: "보내는 중",
   sent: "보냄",
-  delivered: "전달됨",
-  failed: "실패",
+  streaming: "응답 중",
+  done: "",
+  failed: "⚠ 실패",
   "queued-offline": "오프라인 대기",
 };
 
 function formatTime(iso: string) {
   const d = new Date(iso);
-  const hh = String(d.getHours()).padStart(2, "0");
-  const mm = String(d.getMinutes()).padStart(2, "0");
-  return `${hh}:${mm}`;
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
 
-export function ChatBubble({ message }: { message: Message }) {
+export function ChatBubble({ message, onLongPress }: { message: Message; onLongPress?: () => void }) {
   const { color } = useTheme();
-  const isUser = message.author === "user";
-  const isSystem = message.author === "system";
+  const isUser = message.role === "user";
+  const isSystem = message.role === "system";
+  const isStreaming = message.status === "streaming";
 
   if (isSystem) {
     return (
       <View style={{ paddingVertical: space[3], alignItems: "center" }}>
-        <Text style={{ color: color("text-secondary"), fontSize: fontSize.caption }}>
-          {message.text}
-        </Text>
+        <Text style={{ color: color("text-secondary"), fontSize: fontSize.caption }}>{message.text}</Text>
       </View>
     );
   }
+
+  const bubbleTextColor = color(isUser ? "on-user-bubble" : "on-agent-bubble");
+  const statusLabel = message.status ? STATUS_LABEL[message.status] : "";
 
   return (
     <View
@@ -42,8 +50,10 @@ export function ChatBubble({ message }: { message: Message }) {
         paddingVertical: space[1],
       }}
     >
-      <View style={{ maxWidth: "78%" }}>
-        <View
+      <View style={{ maxWidth: "82%" }}>
+        <Pressable
+          onLongPress={onLongPress}
+          delayLongPress={350}
           style={{
             backgroundColor: color(isUser ? "user-bubble" : "agent-bubble"),
             borderRadius: radius.bubble,
@@ -53,60 +63,45 @@ export function ChatBubble({ message }: { message: Message }) {
             borderBottomLeftRadius: isUser ? radius.bubble : radius.sm,
           }}
         >
-          <Text
-            style={{
-              color: color(isUser ? "on-user-bubble" : "on-agent-bubble"),
-              fontSize: fontSize.body,
-              lineHeight: fontSize.body * 1.45,
-            }}
-            selectable
-          >
-            {message.text}
-          </Text>
-        </View>
+          {isUser ? (
+            <Text style={{ color: bubbleTextColor, fontSize: fontSize.body, lineHeight: fontSize.body * 1.45 }} selectable>
+              {message.text}
+            </Text>
+          ) : message.text.length === 0 && isStreaming ? (
+            <Text style={{ color: bubbleTextColor, fontSize: fontSize.body }}>● ● ●</Text>
+          ) : (
+            <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "flex-end" }}>
+              <View style={{ flexShrink: 1 }}>
+                <Markdown text={message.text} baseColor={bubbleTextColor} streaming={isStreaming} />
+              </View>
+              {isStreaming ? <Text style={{ color: bubbleTextColor, fontSize: fontSize.body }}>▍</Text> : null}
+            </View>
+          )}
+        </Pressable>
 
         <View
           style={{
             flexDirection: "row",
             justifyContent: isUser ? "flex-end" : "flex-start",
-            gap: space[2],
+            gap: space[1],
             marginTop: space[1],
             paddingHorizontal: space[1],
           }}
         >
-          <Text style={{ color: color("text-secondary"), fontSize: fontSize.caption }}>
-            {formatTime(message.createdAt)}
-          </Text>
-          {message.status ? (
-            <Text style={{ color: color("text-secondary"), fontSize: fontSize.caption }}>
-              · {STATUS_LABEL[message.status]}
+          <Text style={{ color: color("text-secondary"), fontSize: fontSize.caption }}>{formatTime(message.createdAt)}</Text>
+          {statusLabel ? (
+            <Text
+              style={{
+                color: message.status === "failed" ? color("error") : color("text-secondary"),
+                fontSize: fontSize.caption,
+              }}
+            >
+              · {statusLabel}
             </Text>
           ) : null}
         </View>
 
-        {message.traceSummary ? (
-          <View
-            style={{
-              marginTop: space[2],
-              backgroundColor: color("trace-summary"),
-              borderRadius: radius.lg,
-              paddingHorizontal: space[3],
-              paddingVertical: space[2],
-              alignSelf: isUser ? "flex-end" : "flex-start",
-            }}
-          >
-            <Text
-              style={{
-                color: color("on-trace-summary"),
-                fontSize: fontSize.caption,
-                fontWeight: "600",
-              }}
-            >
-              🧠 {message.traceSummary.thinkingSteps}단계 · 🛠 {message.traceSummary.toolCalls}개 툴 · ⏱{" "}
-              {(message.traceSummary.elapsedMs / 1000).toFixed(1)}초
-            </Text>
-          </View>
-        ) : null}
+        {!isUser && message.traceId ? <TracePanel messageId={message.id} streaming={isStreaming} /> : null}
       </View>
     </View>
   );
