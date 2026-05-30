@@ -42,31 +42,45 @@ maestro test -e BOT_TOKEN=123456789:ABC... e2e/03-add-live-buddy.yaml
 
 ## Android
 
-Verified: **4/4 flows pass on a Pixel_7 emulator (Android 14)**.
+**App: works.** Builds, installs, and runs on a Pixel_7 emulator — renders the user-id
+onboarding screen correctly (verified manually via screenshot + view hierarchy: app
+process alive, correct screen, no crash, no require-cycle LogBox overlay after the
+`f7cabaf` fix).
 
-Setup gotchas on this machine:
+**Maestro suite on Android: NOT passing yet (0/4 as run).** Blocked by an emulator-only
+issue, not an app bug — see below.
+
+Build setup for this machine:
 
 1. **JDK** — Gradle 8.8 (RN 0.74) needs **JDK ≤ 22**; the system default JDK 25 fails with
    `Unsupported class file major version 69`. Use Android Studio's bundled JBR 21.
-2. **First build is slow (~19 min)** — it downloads the NDK and compiles native code.
-   It is *not* hung; let it finish. Subsequent builds are fast.
+2. **First build is slow (~19 min)** — downloads the NDK + compiles native code (not hung).
+   Debug APK lands at `android/app/build/outputs/apk/debug/app-debug.apk`.
 
 ```bash
 export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"
 export ANDROID_HOME="$HOME/Library/Android/sdk"
-$ANDROID_HOME/emulator/emulator -avd Pixel_7 &     # boot an emulator
-cd mobile && npx expo run:android                  # builds + installs (keep Metro running)
+$ANDROID_HOME/emulator/emulator -avd Pixel_7 -no-snapshot &   # boot an emulator
+cd mobile && npx expo run:android                             # build + install (keep Metro up)
 ```
 
-`applicationId` is `dev.simplist.agentclient.mockup` (same as iOS), so the flows run as-is.
-A debug build loads JS from Metro, so keep one Metro on 8081 (`npx expo start`) and, if you
-launch the app manually, tunnel it first:
+`applicationId` is `dev.simplist.agentclient.mockup` (same as iOS). Debug builds load JS
+from Metro, so keep Metro on 8081 and tunnel it: `adb -s emulator-5554 reverse tcp:8081 tcp:8081`.
 
-```bash
-adb -s emulator-5554 reverse tcp:8081 tcp:8081
-maestro --device emulator-5554 test e2e/ --exclude-tags=live
-```
+### Why the suite is blocked (known issue)
 
-> Debug builds show LogBox warnings as a full-screen overlay that blocks Maestro. The app
-> must be warning-free (e.g. no require cycles) for the suite to run on a debug build —
-> Release builds (iOS) suppress LogBox so this only bites on Android debug.
+This Pixel_7 AVD uses a **16 KB-page system image**, and RN 0.74's native `.so` libs aren't
+16 KB-aligned, so the OS shows a full-screen **"Android App Compatibility"** dialog on every
+**fresh launch**. Each flow starts with `launchApp: { clearState: true }`, which resets the
+"Don't Show Again" preference, so the dialog re-appears at the top of every flow and Maestro
+can't see the app → all asserts fail.
+
+To get the suite green on Android, do one of:
+- Run on an AVD with a **non-16 KB** system image (the dialog never appears), or
+- Add a `launchApp` `arguments`/`onLaunch` step (or a Maestro hook) that dismisses the
+  compat dialog after each clearState, or
+- Build a **16 KB-aligned** release (newer AGP/NDK with `android.experimental.enableNewResourceShrinker`
+  + 16 KB page support) so the dialog isn't shown.
+
+(On iOS the suite passes 4/4; the flows themselves and the testID mapping are fine — this is
+purely the Android 16 KB-page emulator dialog.)
