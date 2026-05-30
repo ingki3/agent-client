@@ -17,14 +17,63 @@ npm run typecheck
 ### Standalone install (no Metro)
 
 A Release build embeds the JS bundle, so the app runs without the dev server — open it
-anytime from the simulator/device home screen. Verified on the iOS simulator:
+anytime from the simulator/device home screen.
 
 ```bash
 cd mobile
 npx expo run:ios --configuration Release   # builds, installs, launches (no Metro needed)
 ```
 
-Login is DEV mode (no gateway): any phone number + code `000000`.
+> Source changes are **not** picked up by an already-installed Release app — rerun the
+> command above to rebuild. Routing/store/native changes especially need a full rebuild.
+
+## Onboarding (single user — no login)
+
+No phone/OTP. On first launch the user enters their **Telegram user id (= chat_id)** once
+(`app/(auth)/userid.tsx`); it is stored in SecureStore and becomes each buddy's default
+conversation address, so sending works immediately without first messaging the bot.
+"초기화" in settings wipes the user id + all tokens/cache and returns to onboarding.
+
+(Find your numeric id by messaging `@userinfobot` on Telegram.)
+
+## What works
+
+- **Onboarding** — one-time user id entry → friends list. Auto-enters on relaunch.
+- **Add buddy** — bot token → real `getMe` validation + preview → SecureStore. Dedupes
+  by bot id. (`chatId` defaults to the session user id; still overridable by a learned
+  incoming update.)
+- **Friends list** — list, FAB add, long-press → delete.
+- **Chat** — send/receive, message status, **streaming render**, **GFM markdown**
+  (headings, bold/italic/strike, code, lists, checkboxes, tables, blockquote, links, hr),
+  Stop control, failed-message retry.
+- **Trace** — thinking / tool_call / tool_result panel, live during stream, raw JSON with
+  sensitive-arg masking. Hidden for standard bots (fallback).
+- **Settings** — user id, notifications toggle, info/licenses, reset.
+
+## Telegram protocol
+
+Every Bot API call goes to `{gateway}/bot{token}/{method}` (Telegram standard):
+`getMe`, `sendMessage`, `editMessageText`, `getUpdates` (long-poll), `sendChatAction`.
+
+- **Default gateway** = `https://api.telegram.org` → the app talks to **real Telegram bots**.
+- **Custom gateway / extensions** — `app.json` `expo.extra`:
+  - `gateway` — Bot API base (Hermes/agent gateway, etc.).
+  - `apiBase` — optional gateway extension (SSE trace + delta stream).
+  - `relayBase` — optional push relay (see below). When set, the app stops polling
+    Telegram directly and pulls from the relay; when null, foreground-only direct polling.
+
+Mock seed buddies (no token) demonstrate streaming + markdown + trace without a backend.
+
+## Background push (optional)
+
+By default messages arrive only while a chat screen is open. For background push (and
+foreground catch-up across screens), run the relay in [`../relay`](../relay) and set
+`expo.extra.relayBase` to its URL. The relay becomes the sole `getUpdates` consumer and
+fans out Expo push; the app pulls buffered messages from it. **Real background push needs
+a real device + EAS dev/standalone build** (`eas build -p ios --profile development`) —
+Expo Go and the simulator cannot receive remote push (the foreground relay-pull path does
+work on the simulator). For a local relay over `http://localhost`, the iOS
+`NSAllowsLocalNetworking` ATS exception is already set in `app.json`.
 
 ## Verified
 
@@ -33,37 +82,9 @@ Login is DEV mode (no gateway): any phone number + code `000000`.
   (GFM parse, safe-streaming token suppression, sensitive-arg masking, status rules)
 - Live Telegram smoke (`node scripts/smoke-telegram.mjs <token> <chatId>`) — getMe /
   sendMessage / editMessageText / getUpdates / sendChatAction against api.telegram.org
-- Maestro E2E (`e2e/`) — 01/02/04/05 green against the standalone Release build (no
-  Metro); `03-add-live-buddy` green with `-e BOT_TOKEN=…`
-
-## What works
-
-- **Auth (S-01/02/03)** — phone + SMS code flow, token in SecureStore, auto-login.
-  No backend? Runs in **DEV mode**: any valid-looking number proceeds; code `000000`
-  (or any 6 digits) verifies.
-- **Add buddy (S-12/13)** — bot token → real `getMe` validation + preview → SecureStore.
-  Dedupes by bot id (D-03).
-- **Friends list (S-10)** — list, FAB add, long-press → delete (M-02 → D-04).
-- **Chat (S-11)** — send/receive, message status, **streaming render**, **GFM markdown**
-  (headings, bold/italic/strike, code, lists, checkboxes, tables, blockquote, links, hr),
-  Stop control, failed-message retry (D-02).
-- **Trace (I-01/M-01)** — thinking / tool_call / tool_result panel, live during stream,
-  raw JSON with sensitive-arg masking. Hidden for standard bots (fallback).
-- **Settings (S-20/21)** + logout (D-05) wipes all tokens + cache.
-
-## Telegram protocol
-
-Every Bot API call goes to `{gateway}/bot{token}/{method}` (Telegram standard):
-`getMe`, `sendMessage`, `editMessageText`, `getUpdates` (long-poll), `sendChatAction`.
-
-- **Default gateway** = `https://api.telegram.org` → the app talks to **real Telegram
-  bots**. A bot token acts *as the bot*: `getUpdates` returns messages sent **to** the
-  bot (rendered as the counterpart side; `chatId` is learned from the first one).
-- **Agent Gateway** — set `expo.extra.gateway` / `expo.extra.apiBase` in `app.json` to
-  point at a gateway that adds the phone-auth API and the SSE **trace + delta** stream.
-  No UI changes needed; trace events upgrade buddies to the trace-supporting path.
-
-Mock seed buddies (no token) demonstrate streaming + markdown + trace without a backend.
+- Maestro E2E (`e2e/`) — 4/4 against the standalone Release build (no Metro);
+  `03-add-live-buddy` (live tag) green with `-e BOT_TOKEN=…`
+- Relay-pull receive verified on the simulator (app renders a relay-buffered message)
 
 ## Architecture (TECH_SPEC §2)
 
@@ -71,6 +92,12 @@ Mock seed buddies (no token) demonstrate streaming + markdown + trace without a 
 app/                    Expo Router screens
 src/domain/             pure entities + markdown parser (no RN imports)
 src/application/        Zustand stores + use-cases
-src/infrastructure/     Bot API / Auth / trace stream clients, SecureStore, kv (sqlite)
+src/infrastructure/     Bot API / relay / trace stream clients, push, ReceiveSource,
+                        SecureStore, kv (sqlite native / localStorage web)
 src/ui, src/components   markdown renderer, trace panel, bubbles
 ```
+
+Receive is abstracted behind a `ReceiveSource` port: `TelegramPollSource` (no relay,
+foreground direct poll) or `RelayPullSource` (relay set). Both funnel through
+`useChatStore.ingestUpdates` — the single dedupe/offset authority shared by poll, pull,
+and push handlers. Sending stays direct to the gateway in both modes.
