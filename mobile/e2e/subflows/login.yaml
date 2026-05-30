@@ -3,6 +3,12 @@
 # Caller must `launchApp` (usually with clearState: true) before runFlow.
 appId: dev.simplist.agentclient.mockup
 ---
+# Android emulators with a 16 KB-page system image show an OS "Android App Compatibility"
+# dialog on every fresh launch (clearState resets its "Don't Show Again"). Dismiss it if
+# present. optional → no-op on iOS / non-16KB devices. (’ is a curly apostrophe → regex .)
+- tapOn:
+    text: "Don.t Show Again"
+    optional: true
 - assertVisible: "Agent Client"
 - tapOn:
     id: "userIdInput"
