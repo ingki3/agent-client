@@ -10,4 +10,6 @@ android/
 
 
 # @generated expo-cli
+
+# @generated expo-cli
 expo-env.d.ts
