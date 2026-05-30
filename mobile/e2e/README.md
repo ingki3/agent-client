@@ -42,20 +42,16 @@ maestro test -e BOT_TOKEN=123456789:ABC... e2e/03-add-live-buddy.yaml
 
 ## Android
 
-**App: works.** Builds, installs, and runs on a Pixel_7 emulator — renders the user-id
-onboarding screen correctly (verified manually via screenshot + view hierarchy: app
-process alive, correct screen, no crash, no require-cycle LogBox overlay after the
-`f7cabaf` fix).
-
-**Maestro suite on Android: NOT passing yet (0/4 as run).** Blocked by an emulator-only
-issue, not an app bug — see below.
+Verified: **4/4 flows pass on a Pixel_7 emulator** (observed `4/4 Flows Passed`, EXIT=0,
+twice consecutively).
 
 Build setup for this machine:
 
 1. **JDK** — Gradle 8.8 (RN 0.74) needs **JDK ≤ 22**; the system default JDK 25 fails with
    `Unsupported class file major version 69`. Use Android Studio's bundled JBR 21.
 2. **First build is slow (~19 min)** — downloads the NDK + compiles native code (not hung).
-   Debug APK lands at `android/app/build/outputs/apk/debug/app-debug.apk`.
+   Debug APK lands at `android/app/build/outputs/apk/debug/app-debug.apk` (reinstall with
+   `adb install -r` instead of rebuilding if the emulator is wiped).
 
 ```bash
 export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"
@@ -65,22 +61,19 @@ cd mobile && npx expo run:android                             # build + install 
 ```
 
 `applicationId` is `dev.simplist.agentclient.mockup` (same as iOS). Debug builds load JS
-from Metro, so keep Metro on 8081 and tunnel it: `adb -s emulator-5554 reverse tcp:8081 tcp:8081`.
+from Metro, so keep Metro on 8081 and tunnel it, then run the suite:
 
-### Why the suite is blocked (known issue)
+```bash
+adb -s emulator-5554 reverse tcp:8081 tcp:8081   # + tcp:8787 if testing the relay
+maestro --device emulator-5554 test e2e/ --exclude-tags=live
+```
 
-This Pixel_7 AVD uses a **16 KB-page system image**, and RN 0.74's native `.so` libs aren't
-16 KB-aligned, so the OS shows a full-screen **"Android App Compatibility"** dialog on every
-**fresh launch**. Each flow starts with `launchApp: { clearState: true }`, which resets the
-"Don't Show Again" preference, so the dialog re-appears at the top of every flow and Maestro
-can't see the app → all asserts fail.
+### Emulator-only quirks handled by the flows
 
-To get the suite green on Android, do one of:
-- Run on an AVD with a **non-16 KB** system image (the dialog never appears), or
-- Add a `launchApp` `arguments`/`onLaunch` step (or a Maestro hook) that dismisses the
-  compat dialog after each clearState, or
-- Build a **16 KB-aligned** release (newer AGP/NDK with `android.experimental.enableNewResourceShrinker`
-  + 16 KB page support) so the dialog isn't shown.
-
-(On iOS the suite passes 4/4; the flows themselves and the testID mapping are fine — this is
-purely the Android 16 KB-page emulator dialog.)
+- **16 KB page-size dialog** — this Pixel_7 AVD uses a 16 KB-page system image and RN 0.74's
+  `.so` libs aren't 16 KB-aligned, so the OS shows an "Android App Compatibility" dialog on
+  every fresh launch (and `clearState` resets its "Don't Show Again" preference). The login
+  subflow dismisses it with an `optional` `tapOn "Don.t Show Again"` at the top of each flow
+  — a harmless no-op on iOS and on non-16 KB devices.
+- **LogBox overlay** (debug only) — the app must be warning-free (e.g. no require cycles, see
+  `f7cabaf`) or LogBox covers the screen. Release/iOS suppresses LogBox.
