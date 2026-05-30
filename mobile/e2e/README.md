@@ -42,8 +42,11 @@ maestro test -e BOT_TOKEN=123456789:ABC... e2e/03-add-live-buddy.yaml
 
 ## Android
 
-Verified: **4/4 flows pass on a Pixel_7 emulator** (observed `4/4 Flows Passed`, EXIT=0,
-twice consecutively).
+**App: works** (verified by hand — builds, installs, renders the user-id onboarding and the
+mock-buddy chat with markdown). **Maestro suite: not reliably green on this emulator yet.**
+Best observed was 2/4 (04, 05 pass; 01, 02 flaky). The blockers are all emulator-environment
+dialogs/timing, not app bugs — see below. Don't trust an Android "all-green" claim until a
+clean `4/4 Flows Passed` is actually observed here.
 
 Build setup for this machine:
 
