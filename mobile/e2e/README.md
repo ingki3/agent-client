@@ -71,17 +71,20 @@ adb -s emulator-5554 reverse tcp:8081 tcp:8081   # + tcp:8787 if testing the rel
 maestro --device emulator-5554 test e2e/ --exclude-tags=live
 ```
 
-### Emulator-only quirks handled by the flows
+### Emulator-only blockers (why the suite is flaky here)
 
 - **16 KB page-size dialog** — this Pixel_7 AVD uses a 16 KB-page system image and RN 0.74's
   `.so` libs aren't 16 KB-aligned, so the OS shows an "Android App Compatibility" dialog on
-  every fresh launch (and `clearState` resets its "Don't Show Again" preference). The login
-  subflow dismisses it with an `optional` `tapOn "Don.t Show Again"` at the top of each flow
-  — a harmless no-op on iOS and on non-16 KB devices.
+  every fresh launch (and `clearState` resets its "Don't Show Again"). The login subflow
+  dismisses it with an `optional` `tapOn "Don.t Show Again"` — a no-op on iOS / non-16 KB.
+- **"Try out your stylus" dialog** — a Pixel system popup that intermittently appears over the
+  chat when a text field is focused, covering it (breaks 01/02). Not yet handled.
 - **LogBox overlay** (debug only) — the app must be warning-free (e.g. no require cycles, see
   `f7cabaf`) or LogBox covers the screen. Release/iOS suppresses LogBox.
 
-> The flows assume `expo.extra.relayBase = null` (the default — relay/push is opt-in).
-> With a relay configured, the mock-buddy chat flows (01/02) behave differently (the trace
-> chip relies on the foreground mock-stream path), so run the default suite with relayBase
-> null and test the relay path separately.
+The clean fix is to run e2e on a **plain (non-Pixel, non-16 KB) AVD** — none of these dialogs
+appear there. The flows and the testID→`resource-id` mapping are correct (4/4 on iOS).
+
+> The flows assume `expo.extra.relayBase = null` (the default — relay/push is opt-in). With a
+> relay configured, mock-buddy chat flows (01/02) behave differently, so test the relay path
+> separately.
