@@ -14,6 +14,28 @@ npm run ios      # or: npm run android / npm run web
 npm run typecheck
 ```
 
+### Standalone install (no Metro)
+
+A Release build embeds the JS bundle, so the app runs without the dev server — open it
+anytime from the simulator/device home screen. Verified on the iOS simulator:
+
+```bash
+cd mobile
+npx expo run:ios --configuration Release   # builds, installs, launches (no Metro needed)
+```
+
+Login is DEV mode (no gateway): any phone number + code `000000`.
+
+## Verified
+
+- `npm run typecheck` — clean
+- Domain unit smoke (`node --experimental-strip-types scripts/smoke-domain.ts`) — 13/13
+  (GFM parse, safe-streaming token suppression, sensitive-arg masking, status rules)
+- Live Telegram smoke (`node scripts/smoke-telegram.mjs <token> <chatId>`) — getMe /
+  sendMessage / editMessageText / getUpdates / sendChatAction against api.telegram.org
+- Maestro E2E (`e2e/`) — 01/02/04/05 green against the standalone Release build (no
+  Metro); `03-add-live-buddy` green with `-e BOT_TOKEN=…`
+
 ## What works
 
 - **Auth (S-01/02/03)** — phone + SMS code flow, token in SecureStore, auto-login.
