@@ -83,6 +83,10 @@ export default function AddBuddyTokenScreen() {
               placeholderTextColor={color("text-secondary")}
               autoCapitalize="none"
               autoCorrect={false}
+              autoComplete="off"
+              textContentType="none"
+              importantForAutofill="no"
+              spellCheck={false}
               secureTextEntry={masked}
               style={{ flex: 1, color: color("text-primary"), fontSize: fontSize.body, paddingVertical: space[3] }}
             />
