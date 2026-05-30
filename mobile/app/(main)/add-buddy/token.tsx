@@ -104,8 +104,6 @@ export default function AddBuddyTokenScreen() {
           토큰은 @BotFather에서 발급받을 수 있습니다. 토큰은 기기 SecureStore에만 저장됩니다.
         </Text>
 
-        <View style={{ flex: 1 }} />
-
         <Pressable
           testID="tokenNext"
           onPress={handleNext}
