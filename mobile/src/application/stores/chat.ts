@@ -20,7 +20,7 @@ import { simulateStream, type StreamEvent, type StreamHandle } from "@/infrastru
 import { secureStore, SecureKeys } from "@/infrastructure/storage/secureStore";
 import { kv, KvKeys } from "@/infrastructure/storage/kv";
 import { seedMessages, cannedReply, syntheticTrace } from "@/mock/seed";
-import { receiveSource } from "@/infrastructure/receive/ReceiveSource";
+import { receiveSource, setChatBridge } from "@/infrastructure/receive/ReceiveSource";
 import { useBuddiesStore } from "./buddies";
 import { useTraceStore } from "./trace";
 
@@ -288,4 +288,11 @@ export const useChatStore = create<ChatState>((set, get) => {
       await receiveSource.catchUp(buddyId);
     },
   };
+});
+
+// Inject the chat store into ReceiveSource (one-directional: chat → ReceiveSource).
+// Breaks the require cycle that an `import { useChatStore }` in ReceiveSource would create.
+setChatBridge({
+  currentOffset: (buddyId) => useChatStore.getState().currentOffset(buddyId),
+  ingestUpdates: (buddyId, updates) => useChatStore.getState().ingestUpdates(buddyId, updates),
 });

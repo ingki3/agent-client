@@ -40,30 +40,33 @@ maestro test -e BOT_TOKEN=123456789:ABC... e2e/03-add-live-buddy.yaml
 
 `appId` = `dev.simplist.agentclient.mockup` (from app.json). Update it if the bundle id changes.
 
-## Android — NOT yet verified
+## Android
 
-> **Status: the Android build does not yet complete on this machine.** The flows below are
-> iOS-verified and platform-agnostic (testIDs map to Android `resource-id`), but the suite
-> has **not** been run against an installed Android build. Don't trust an Android pass
-> until the build issues below are resolved.
+Verified: **4/4 flows pass on a Pixel_7 emulator (Android 14)**.
 
-Known blockers found while attempting an Android build:
+Setup gotchas on this machine:
 
-1. **JDK version** — Gradle 8.8 (RN 0.74) needs **JDK ≤ 22**. The system default here is
-   JDK 25 → `Unsupported class file major version 69`. Use Android Studio's bundled JBR 21:
-   ```bash
-   export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"
-   export ANDROID_HOME="$HOME/Library/Android/sdk"
-   ```
-2. **NDK install hangs** — with JBR 21 the build progresses but then **hangs while
-   installing NDK 25.1.8937393** during `Configure project :expo-sqlite` (sat ~30 min with
-   no progress). Likely needs the NDK pre-installed via Android Studio's SDK Manager, or an
-   `ndkVersion` pin, before `expo run:android` can finish non-interactively.
-
-`applicationId` is `dev.simplist.agentclient.mockup` (same as iOS — confirmed in
-`android/app/build.gradle`), so once a build installs, run the suite directly:
+1. **JDK** — Gradle 8.8 (RN 0.74) needs **JDK ≤ 22**; the system default JDK 25 fails with
+   `Unsupported class file major version 69`. Use Android Studio's bundled JBR 21.
+2. **First build is slow (~19 min)** — it downloads the NDK and compiles native code.
+   It is *not* hung; let it finish. Subsequent builds are fast.
 
 ```bash
-# boot emulator: $ANDROID_HOME/emulator/emulator -avd Pixel_7
+export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"
+export ANDROID_HOME="$HOME/Library/Android/sdk"
+$ANDROID_HOME/emulator/emulator -avd Pixel_7 &     # boot an emulator
+cd mobile && npx expo run:android                  # builds + installs (keep Metro running)
+```
+
+`applicationId` is `dev.simplist.agentclient.mockup` (same as iOS), so the flows run as-is.
+A debug build loads JS from Metro, so keep one Metro on 8081 (`npx expo start`) and, if you
+launch the app manually, tunnel it first:
+
+```bash
+adb -s emulator-5554 reverse tcp:8081 tcp:8081
 maestro --device emulator-5554 test e2e/ --exclude-tags=live
 ```
+
+> Debug builds show LogBox warnings as a full-screen overlay that blocks Maestro. The app
+> must be warning-free (e.g. no require cycles) for the suite to run on a debug build —
+> Release builds (iOS) suppress LogBox so this only bites on Android debug.
