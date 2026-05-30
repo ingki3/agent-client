@@ -11,6 +11,7 @@ import { useTheme } from "@/design/theme";
 import { fontSize, radius, space, touch } from "@/design/tokens";
 import { useAuthStore } from "@/application/stores/auth";
 import { useBuddiesStore } from "@/application/stores/buddies";
+import { useNotificationsStore } from "@/application/stores/notifications";
 import { AuthError } from "@/infrastructure/api/authClient";
 
 const LENGTH = 6;
@@ -44,6 +45,8 @@ export default function OtpScreen() {
     try {
       await verifyCode(value);
       await hydrateBuddies();
+      // Ask for notification permission + register push (no-op without a relay / on sim).
+      void useNotificationsStore.getState().enable();
       router.replace("/buddies");
     } catch (e) {
       const reason =

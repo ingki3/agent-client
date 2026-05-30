@@ -52,4 +52,7 @@ export const SecureKeys = {
   refreshToken: "refresh_token_v1",
   phoneNumber: "phone_number_v1",
   botToken: (buddyId: string) => `bot_token_v1_${buddyId}`,
+  expoPushToken: "expo_push_token_v1",
+  deviceId: "device_id_v1",
+  deviceSecret: "device_secret_v1",
 } as const;

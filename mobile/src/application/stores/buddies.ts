@@ -7,6 +7,8 @@ import type { AccentSlot, Buddy } from "@/domain/entities";
 import { botApi, type TgUser } from "@/infrastructure/api/telegramBotApi";
 import { secureStore, SecureKeys } from "@/infrastructure/storage/secureStore";
 import { kv, KvKeys } from "@/infrastructure/storage/kv";
+import { pushEnabled } from "@/infrastructure/config";
+import { relayClient } from "@/infrastructure/api/relayClient";
 import { seedBuddies } from "@/mock/seed";
 
 const ACCENTS: AccentSlot[] = [
@@ -88,12 +90,23 @@ export const useBuddiesStore = create<BuddiesState>((set, get) => ({
     const buddies = [...get().buddies, buddy];
     set({ buddies });
     await persist(buddies);
+
+    // Register the bot with the push relay so it polls + pushes (no-op without relay).
+    if (pushEnabled) {
+      const pushTok = await secureStore.get(SecureKeys.expoPushToken);
+      if (pushTok) {
+        void relayClient.register(pushTok, [{ buddyId: id, botToken: token.trim(), botId: meta.id }]);
+      }
+    }
     return { id };
   },
 
   remove: async (id) => {
+    const buddy = get().buddies.find((b) => b.id === id);
+    if (pushEnabled && buddy?.botId != null) await relayClient.unregister(buddy.botId);
     await secureStore.remove(SecureKeys.botToken(id));
     await kv.remove(KvKeys.messages(id));
+    await kv.remove(KvKeys.offset(id));
     const buddies = get().buddies.filter((b) => b.id !== id);
     set({ buddies });
     await persist(buddies);
@@ -106,9 +119,11 @@ export const useBuddiesStore = create<BuddiesState>((set, get) => ({
   },
 
   reset: async () => {
+    if (pushEnabled) await relayClient.unregister(); // drop whole device from relay
     for (const b of get().buddies) {
       await secureStore.remove(SecureKeys.botToken(b.id));
       await kv.remove(KvKeys.messages(b.id));
+      await kv.remove(KvKeys.offset(b.id));
     }
     await kv.remove(KvKeys.buddies);
     set({ buddies: [], hydrated: false });

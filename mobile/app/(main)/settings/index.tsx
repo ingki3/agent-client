@@ -9,7 +9,9 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { useTheme } from "@/design/theme";
 import { fontSize, radius, space, touch } from "@/design/tokens";
 import { useAuthStore } from "@/application/stores/auth";
+import { useNotificationsStore } from "@/application/stores/notifications";
 import { signOut } from "@/application/usecases/session";
+import { pushEnabled } from "@/infrastructure/config";
 
 function maskPhone(phone: string | null): string {
   if (!phone) return "번호 미확인";
@@ -21,7 +23,12 @@ export default function SettingsScreen() {
   const { color } = useTheme();
   const router = useRouter();
   const phone = useAuthStore((s) => s.phone);
+  const permission = useNotificationsStore((s) => s.permission);
+  const enableNotifications = useNotificationsStore((s) => s.enable);
   const [confirm, setConfirm] = useState(false);
+
+  const notifLabel =
+    permission === "granted" ? "알림 켜짐" : permission === "denied" ? "알림 꺼짐 (설정에서 허용)" : "알림 켜기";
 
   const Row = ({ label, onPress, danger }: { label: string; onPress: () => void; danger?: boolean }) => (
     <Pressable
@@ -48,6 +55,12 @@ export default function SettingsScreen() {
       </View>
 
       <View style={{ borderTopWidth: 1, borderBottomWidth: 1, borderColor: color("border") }}>
+        {pushEnabled ? (
+          <>
+            <Row label={notifLabel} onPress={() => void enableNotifications()} />
+            <View style={{ height: 1, backgroundColor: color("border"), marginLeft: space[5] }} />
+          </>
+        ) : null}
         <Row label="정보 / 라이선스" onPress={() => router.push("/settings/about")} />
         <View style={{ height: 1, backgroundColor: color("border"), marginLeft: space[5] }} />
         <Row label="로그아웃" danger onPress={() => setConfirm(true)} />

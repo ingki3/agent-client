@@ -15,19 +15,18 @@
 import { create } from "zustand";
 import type { Message, MessageStatus } from "@/domain/entities";
 import { uid } from "@/lib/id";
-import { botApi } from "@/infrastructure/api/telegramBotApi";
+import { botApi, type TgUpdate } from "@/infrastructure/api/telegramBotApi";
 import { simulateStream, type StreamEvent, type StreamHandle } from "@/infrastructure/api/traceStream";
 import { secureStore, SecureKeys } from "@/infrastructure/storage/secureStore";
 import { kv, KvKeys } from "@/infrastructure/storage/kv";
 import { seedMessages, cannedReply, syntheticTrace } from "@/mock/seed";
+import { receiveSource } from "@/infrastructure/receive/ReceiveSource";
 import { useBuddiesStore } from "./buddies";
 import { useTraceStore } from "./trace";
 
 const streamHandles = new Map<string, StreamHandle>();
-const pollers = new Map<string, { stopped: boolean; abort?: AbortController }>();
+// Receive cursor per buddy (Telegram update_id / relay pull cursor), seeded from kv.
 const offsets = new Map<string, number>();
-
-const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 type ChatState = {
   byBuddy: Record<string, Message[]>;
@@ -39,6 +38,16 @@ type ChatState = {
   stop: (buddyId: string) => void;
   startPolling: (buddyId: string) => Promise<void>;
   stopPolling: (buddyId: string) => void;
+  /** Catch up missed messages (relay pull / on-open flush). No-op cost in poll mode. */
+  catchUp: (buddyId: string) => Promise<void>;
+  /** Current receive cursor for a buddy (seeded from kv). */
+  currentOffset: (buddyId: string) => number;
+  /**
+   * Single dedupe authority: ingest Telegram-shaped updates (from poll, relay pull, or
+   * push). Learns chatId, dedupes by message_id, appends, bumps unread, advances + persists
+   * the offset cursor. Returns the new cursor.
+   */
+  ingestUpdates: (buddyId: string, updates: TgUpdate[]) => number;
 };
 
 export const useChatStore = create<ChatState>((set, get) => {
@@ -169,11 +178,46 @@ export const useChatStore = create<ChatState>((set, get) => {
     streamingMessageId: {},
 
     hydrate: async (buddyId) => {
+      if (offsets.get(buddyId) == null) {
+        offsets.set(buddyId, (await kv.get<number>(KvKeys.offset(buddyId))) ?? 0);
+      }
       if (get().byBuddy[buddyId]) return;
       const stored = await kv.get<Message[]>(KvKeys.messages(buddyId));
       const initial = stored ?? seedMessages[buddyId] ?? [];
       set((s) => ({ byBuddy: { ...s.byBuddy, [buddyId]: initial } }));
       if (!stored && seedMessages[buddyId]) persist(buddyId);
+    },
+
+    currentOffset: (buddyId) => offsets.get(buddyId) ?? 0,
+
+    ingestUpdates: (buddyId, updates) => {
+      let offset = offsets.get(buddyId) ?? 0;
+      const buddy = useBuddiesStore.getState().buddies.find((b) => b.id === buddyId);
+      for (const u of updates) {
+        if (u.update_id + 1 > offset) offset = u.update_id + 1;
+        const m = u.message ?? u.edited_message;
+        if (!m?.text) continue;
+        if (buddy && buddy.chatId == null) {
+          useBuddiesStore.getState().update(buddyId, { chatId: m.chat.id });
+          buddy.chatId = m.chat.id;
+        }
+        const id = `tg-${m.message_id}`;
+        if (get().byBuddy[buddyId]?.some((x) => x.id === id)) continue;
+        append(buddyId, {
+          id,
+          clientId: id,
+          buddyId,
+          role: "agent",
+          text: m.text,
+          createdAt: new Date(m.date * 1000).toISOString(),
+          status: "done",
+        });
+        touchBuddy(buddyId, m.text, true);
+        persist(buddyId);
+      }
+      offsets.set(buddyId, offset);
+      void kv.set(KvKeys.offset(buddyId), offset);
+      return offset;
     },
 
     send: async (buddyId, text) => {
@@ -225,63 +269,23 @@ export const useChatStore = create<ChatState>((set, get) => {
       persist(buddyId);
     },
 
+    // Receive is delegated to the ReceiveSource port: TelegramPollSource (direct
+    // getUpdates, when no relay) or RelayPullSource (pulls from the relay; the relay is
+    // then the sole Telegram consumer + sends push). Both funnel through ingestUpdates.
     startPolling: async (buddyId) => {
       const buddy = useBuddiesStore.getState().buddies.find((b) => b.id === buddyId);
-      if (!buddy?.live || pollers.has(buddyId)) return;
-      const token = await secureStore.get(SecureKeys.botToken(buddyId));
-      if (!token) return;
-
-      const ctrl: { stopped: boolean; abort?: AbortController } = { stopped: false };
-      pollers.set(buddyId, ctrl);
-      let offset = offsets.get(buddyId) ?? 0;
-      let backoff = 1000;
-
-      void (async () => {
-        while (!ctrl.stopped) {
-          try {
-            const abort = new AbortController();
-            ctrl.abort = abort;
-            const updates = await botApi.getUpdates(token, offset, 25, abort.signal);
-            backoff = 1000;
-            for (const u of updates) {
-              offset = u.update_id + 1;
-              const m = u.message ?? u.edited_message;
-              if (!m?.text) continue;
-              if (buddy.chatId == null) {
-                useBuddiesStore.getState().update(buddyId, { chatId: m.chat.id });
-                buddy.chatId = m.chat.id;
-              }
-              const id = `tg-${m.message_id}`;
-              if (get().byBuddy[buddyId]?.some((x) => x.id === id)) continue;
-              append(buddyId, {
-                id,
-                clientId: id,
-                buddyId,
-                role: "agent",
-                text: m.text,
-                createdAt: new Date(m.date * 1000).toISOString(),
-                status: "done",
-              });
-              touchBuddy(buddyId, m.text, true);
-              persist(buddyId);
-            }
-            offsets.set(buddyId, offset);
-          } catch {
-            if (ctrl.stopped) break;
-            await sleep(backoff);
-            backoff = Math.min(backoff * 2, 8000);
-          }
-        }
-      })();
+      if (!buddy?.live) return;
+      await receiveSource.start(buddyId);
     },
 
     stopPolling: (buddyId) => {
-      const ctrl = pollers.get(buddyId);
-      if (ctrl) {
-        ctrl.stopped = true;
-        ctrl.abort?.abort();
-        pollers.delete(buddyId);
-      }
+      receiveSource.stop(buddyId);
+    },
+
+    catchUp: async (buddyId) => {
+      const buddy = useBuddiesStore.getState().buddies.find((b) => b.id === buddyId);
+      if (!buddy?.live) return;
+      await receiveSource.catchUp(buddyId);
     },
   };
 });

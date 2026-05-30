@@ -12,6 +12,8 @@ import Constants from "expo-constants";
 type Extra = {
   gateway?: string;
   apiBase?: string;
+  relayBase?: string;
+  eas?: { projectId?: string };
 };
 
 const extra = (Constants.expoConfig?.extra ?? {}) as Extra;
@@ -33,7 +35,19 @@ export const config = {
    * "dev/offline auth" mode (see AuthClient) and rely on plain Telegram for chat.
    */
   apiBase: normalizeApiBase(extra.apiBase),
+  /**
+   * Base for the push relay (separate self-owned service). When set, the app stops
+   * polling Telegram getUpdates directly and pulls from the relay + receives Expo push.
+   */
+  relayBase: normalizeApiBase(extra.relayBase),
 } as const;
 
 /** True when a custom Agent Gateway is configured (enables phone auth + trace stream). */
 export const hasBackend = config.apiBase != null;
+
+/** True when a push relay is configured (enables background push + relay pull). */
+export const pushEnabled = config.relayBase != null;
+
+/** EAS projectId — required by expo-notifications getExpoPushTokenAsync. */
+export const easProjectId =
+  extra.eas?.projectId ?? (Constants.easConfig as { projectId?: string } | undefined)?.projectId ?? null;

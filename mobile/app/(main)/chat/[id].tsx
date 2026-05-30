@@ -27,6 +27,7 @@ export default function ChatScreen() {
   const retry = useChatStore((s) => s.retry);
   const startPolling = useChatStore((s) => s.startPolling);
   const stopPolling = useChatStore((s) => s.stopPolling);
+  const catchUp = useChatStore((s) => s.catchUp);
 
   const [retryFor, setRetryFor] = useState<Message | null>(null);
   const listRef = useRef<FlatList>(null);

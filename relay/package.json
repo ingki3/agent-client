@@ -1,0 +1,25 @@
+{
+  "name": "agent-client-relay",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Push relay for Agent Client — sole getUpdates consumer per bot token, fans out Expo push.",
+  "scripts": {
+    "dev": "node --import tsx --watch src/index.ts",
+    "start": "node --import tsx src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx src/store.test.ts",
+    "smoke": "node --import tsx src/smoke.ts"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.8.1",
+    "expo-server-sdk": "^3.10.0",
+    "fastify": "^5.2.1"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}
