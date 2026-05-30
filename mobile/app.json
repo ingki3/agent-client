@@ -32,7 +32,7 @@
     "extra": {
       "gateway": "https://api.telegram.org",
       "apiBase": null,
-      "relayBase": null
+      "relayBase": "http://localhost:8787"
     },
     "experiments": {
       "typedRoutes": false

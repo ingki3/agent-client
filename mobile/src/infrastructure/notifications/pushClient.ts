@@ -1,12 +1,11 @@
 /**
  * Expo Notifications wrapper (push token + listeners). Background push requires a real
- * device + an EAS dev/standalone build — on a simulator (`!Device.isDevice`) or in Expo
- * Go, getExpoPushTokenAsync is unavailable, so ensurePermissionAndToken() returns null
- * and every push path becomes a no-op.
+ * device + an EAS dev/standalone build — on a simulator (or in Expo Go),
+ * getExpoPushTokenAsync throws, so ensurePermissionAndToken() returns null and every push
+ * path becomes a no-op. (No expo-device dependency: the try/catch is the guard.)
  */
 import { Platform } from "react-native";
 import * as Notifications from "expo-notifications";
-import * as Device from "expo-device";
 import { easProjectId } from "@/infrastructure/config";
 
 // Foreground: show the banner + bump the badge (so an open app still surfaces it).
@@ -31,7 +30,6 @@ export const pushClient = {
    * (simulator/emulator, denied permission, missing projectId).
    */
   async ensurePermissionAndToken(): Promise<string | null> {
-    if (!Device.isDevice) return null;
     if (!easProjectId) return null;
 
     if (Platform.OS === "android") {
