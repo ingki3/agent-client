@@ -40,26 +40,30 @@ maestro test -e BOT_TOKEN=123456789:ABC... e2e/03-add-live-buddy.yaml
 
 `appId` = `dev.simplist.agentclient.mockup` (from app.json). Update it if the bundle id changes.
 
-## Android
+## Android — NOT yet verified
 
-Build needs **JDK 17** (Gradle 8.8 rejects JDK 21+/25 — `Unsupported class file major
-version`). Point Gradle at it:
+> **Status: the Android build does not yet complete on this machine.** The flows below are
+> iOS-verified and platform-agnostic (testIDs map to Android `resource-id`), but the suite
+> has **not** been run against an installed Android build. Don't trust an Android pass
+> until the build issues below are resolved.
+
+Known blockers found while attempting an Android build:
+
+1. **JDK version** — Gradle 8.8 (RN 0.74) needs **JDK ≤ 22**. The system default here is
+   JDK 25 → `Unsupported class file major version 69`. Use Android Studio's bundled JBR 21:
+   ```bash
+   export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"
+   export ANDROID_HOME="$HOME/Library/Android/sdk"
+   ```
+2. **NDK install hangs** — with JBR 21 the build progresses but then **hangs while
+   installing NDK 25.1.8937393** during `Configure project :expo-sqlite` (sat ~30 min with
+   no progress). Likely needs the NDK pre-installed via Android Studio's SDK Manager, or an
+   `ndkVersion` pin, before `expo run:android` can finish non-interactively.
+
+`applicationId` is `dev.simplist.agentclient.mockup` (same as iOS — confirmed in
+`android/app/build.gradle`), so once a build installs, run the suite directly:
 
 ```bash
-export JAVA_HOME="$(/usr/libexec/java_home -v 17)"
-export ANDROID_HOME="$HOME/Library/Android/sdk"
-cd mobile && npx expo run:android        # builds, installs on the running emulator
+# boot emulator: $ANDROID_HOME/emulator/emulator -avd Pixel_7
+maestro --device emulator-5554 test e2e/ --exclude-tags=live
 ```
-
-Android's `applicationId` is `com.dev.simplist.agentclient.mockup` (Expo prefixes `com.`),
-which differs from iOS `dev.simplist.agentclient.mockup`. Run the suite against a copy with
-the appId rewritten, targeting the emulator:
-
-```bash
-cp -r e2e /tmp/e2e-android
-find /tmp/e2e-android -name '*.yaml' -exec sed -i '' \
-  's/appId: dev.simplist.agentclient.mockup/appId: com.dev.simplist.agentclient.mockup/' {} +
-maestro --device emulator-5554 test /tmp/e2e-android --exclude-tags=live
-```
-
-Verified: 01/02/04/05 pass on a Pixel_7 emulator.
