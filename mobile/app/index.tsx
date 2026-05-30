@@ -1,7 +1,6 @@
 /**
- * S-01 · Splash → branch (USER_FLOW §2.1, FR-03).
- * Auth token is read in the root layout's hydrate(); here we wait for it and route:
- * GUEST → phone entry, AUTH → friends list.
+ * S-01 · Splash → branch. Session (user id) is read in the root layout's hydrate();
+ * here we wait and route: onboarding → user-id entry, ready → friends list.
  */
 import { useEffect } from "react";
 import { View, Text, ActivityIndicator } from "react-native";
@@ -17,11 +16,11 @@ export default function Splash() {
   const hydrateBuddies = useBuddiesStore((s) => s.hydrate);
 
   useEffect(() => {
-    if (status === "authed") void hydrateBuddies();
+    if (status === "ready") void hydrateBuddies();
   }, [status, hydrateBuddies]);
 
-  if (status === "guest") return <Redirect href="/phone" />;
-  if (status === "authed") return <Redirect href="/buddies" />;
+  if (status === "onboarding") return <Redirect href="/userid" />;
+  if (status === "ready") return <Redirect href="/buddies" />;
 
   return (
     <View style={{ flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: color("surface"), gap: space[4] }}>

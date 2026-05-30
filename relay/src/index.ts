@@ -25,7 +25,9 @@ function authDevice(req: { headers: Record<string, unknown> }, deviceId: string)
 
 app.post("/register", async (req, reply) => {
   const body = req.body as RegisterBody;
-  if (!body?.deviceId || !body?.expoPushToken || !body?.gateway || !Array.isArray(body?.bots)) {
+  // expoPushToken may be empty (simulator / pull-only mode): the relay still polls and
+  // buffers for /pull; push fan-out skips devices without a valid Expo token.
+  if (!body?.deviceId || !body?.gateway || !Array.isArray(body?.bots)) {
     return reply.code(400).send({ ok: false, error: "bad request" });
   }
 
@@ -44,7 +46,7 @@ app.post("/register", async (req, reply) => {
   store.upsertDevice({
     deviceId: body.deviceId,
     secretHash,
-    expoPushToken: body.expoPushToken,
+    expoPushToken: body.expoPushToken ?? "",
     platform: body.platform === "android" ? "android" : "ios",
   });
 

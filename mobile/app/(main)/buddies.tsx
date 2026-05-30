@@ -24,7 +24,7 @@ export default function BuddiesScreen() {
   const [sheetFor, setSheetFor] = useState<Buddy | null>(null);
   const [confirmFor, setConfirmFor] = useState<Buddy | null>(null);
 
-  if (status === "guest") return <Redirect href="/phone" />;
+  if (status === "onboarding") return <Redirect href="/userid" />;
 
   const SettingsButton = (
     <Pressable
