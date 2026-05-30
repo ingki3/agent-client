@@ -39,3 +39,27 @@ maestro test -e BOT_TOKEN=123456789:ABC... e2e/03-add-live-buddy.yaml
 | `05-logout.yaml` | 초기화 → 온보딩 복귀 | |
 
 `appId` = `dev.simplist.agentclient.mockup` (from app.json). Update it if the bundle id changes.
+
+## Android
+
+Build needs **JDK 17** (Gradle 8.8 rejects JDK 21+/25 — `Unsupported class file major
+version`). Point Gradle at it:
+
+```bash
+export JAVA_HOME="$(/usr/libexec/java_home -v 17)"
+export ANDROID_HOME="$HOME/Library/Android/sdk"
+cd mobile && npx expo run:android        # builds, installs on the running emulator
+```
+
+Android's `applicationId` is `com.dev.simplist.agentclient.mockup` (Expo prefixes `com.`),
+which differs from iOS `dev.simplist.agentclient.mockup`. Run the suite against a copy with
+the appId rewritten, targeting the emulator:
+
+```bash
+cp -r e2e /tmp/e2e-android
+find /tmp/e2e-android -name '*.yaml' -exec sed -i '' \
+  's/appId: dev.simplist.agentclient.mockup/appId: com.dev.simplist.agentclient.mockup/' {} +
+maestro --device emulator-5554 test /tmp/e2e-android --exclude-tags=live
+```
+
+Verified: 01/02/04/05 pass on a Pixel_7 emulator.
