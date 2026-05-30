@@ -95,12 +95,12 @@ export const useBuddiesStore = create<BuddiesState>((set, get) => ({
     set({ buddies });
     await persist(buddies);
 
-    // Register the bot with the push relay so it polls + pushes (no-op without relay).
+    // Register the bot with the relay so it polls + buffers (and pushes when a push token
+    // exists). Register even without a push token (e.g. simulator) so the relay-pull path
+    // still works in the foreground.
     if (pushEnabled) {
-      const pushTok = await secureStore.get(SecureKeys.expoPushToken);
-      if (pushTok) {
-        void relayClient.register(pushTok, [{ buddyId: id, botToken: token.trim(), botId: meta.id }]);
-      }
+      const pushTok = (await secureStore.get(SecureKeys.expoPushToken)) ?? "";
+      void relayClient.register(pushTok, [{ buddyId: id, botToken: token.trim(), botId: meta.id }]);
     }
     return { id };
   },
