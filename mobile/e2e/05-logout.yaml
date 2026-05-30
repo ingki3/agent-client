@@ -11,4 +11,7 @@ appId: dev.simplist.agentclient.mockup
 - assertVisible: "초기화할까요?"
 - tapOn:
     id: "logoutConfirm"
-- assertVisible: "Agent Client" # back to onboarding (user-id entry)
+# reset → signOut → router.replace → splash → onboarding is async; wait for it.
+- extendedWaitUntil:
+    visible: "Agent Client" # back to onboarding (user-id entry)
+    timeout: 10000

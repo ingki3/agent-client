@@ -1,16 +1,22 @@
 # USER_FLOW §3.6 — 친구 삭제 (M-02 빠른 액션 → D-04 확인).
-# Modal contents are targeted by testID; waitForAnimationToEnd lets the slide-in settle
-# before the lookup.
+# Modal contents are targeted by testID; extendedWaitUntil lets the bottom-sheet /
+# dialog mount (slower on Android) before the lookup.
 appId: dev.simplist.agentclient.mockup
 ---
 - launchApp:
     clearState: true
 - runFlow: subflows/login.yaml
 - longPressOn: "Knowledge Keeper"
-- waitForAnimationToEnd
+- extendedWaitUntil:
+    visible:
+      id: "sheetDelete" # M-02 quick-action sheet
+    timeout: 6000
 - tapOn:
-    id: "sheetDelete" # M-02 quick-action sheet
-- waitForAnimationToEnd
+    id: "sheetDelete"
+- extendedWaitUntil:
+    visible:
+      id: "deleteConfirm" # D-04 confirm dialog
+    timeout: 6000
 - tapOn:
-    id: "deleteConfirm" # D-04 confirm dialog
+    id: "deleteConfirm"
 - assertNotVisible: "Knowledge Keeper"
