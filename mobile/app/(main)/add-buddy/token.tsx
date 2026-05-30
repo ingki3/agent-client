@@ -19,7 +19,9 @@ export default function AddBuddyTokenScreen() {
   const setDraft = useAddBuddyDraft((s) => s.set);
 
   const [token, setToken] = useState("");
-  const [masked, setMasked] = useState(true);
+  // Default visible: a bot token isn't a password; secureTextEntry triggers the iOS
+  // strong-password keyboard that covers the submit button. Toggle to hide.
+  const [masked, setMasked] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
