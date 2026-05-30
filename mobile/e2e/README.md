@@ -77,3 +77,8 @@ maestro --device emulator-5554 test e2e/ --exclude-tags=live
   — a harmless no-op on iOS and on non-16 KB devices.
 - **LogBox overlay** (debug only) — the app must be warning-free (e.g. no require cycles, see
   `f7cabaf`) or LogBox covers the screen. Release/iOS suppresses LogBox.
+
+> The flows assume `expo.extra.relayBase = null` (the default — relay/push is opt-in).
+> With a relay configured, the mock-buddy chat flows (01/02) behave differently (the trace
+> chip relies on the foreground mock-stream path), so run the default suite with relayBase
+> null and test the relay path separately.
