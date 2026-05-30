@@ -1,4 +1,4 @@
-# USER_FLOW §3.7 — 로그아웃 (S-20 → D-05) → GUEST → 전화번호 화면 복귀.
+# 초기화(로그아웃) (S-20 → D-05) → onboarding(사용자 ID 입력) 복귀.
 appId: dev.simplist.agentclient.mockup
 ---
 - launchApp:
@@ -6,9 +6,9 @@ appId: dev.simplist.agentclient.mockup
 - runFlow: subflows/login.yaml
 - tapOn:
     id: "settingsButton"
-- assertVisible: "로그인된 번호"
-- tapOn: "로그아웃" # settings row → opens D-05
-- assertVisible: "로그아웃할까요?"
+- assertVisible: "사용자 ID"
+- tapOn: "초기화 (로그아웃)" # settings row → opens D-05
+- assertVisible: "초기화할까요?"
 - tapOn:
     id: "logoutConfirm"
-- assertVisible: "전화번호 입력" # back to GUEST
+- assertVisible: "Agent Client" # back to onboarding (user-id entry)

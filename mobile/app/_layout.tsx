@@ -25,8 +25,7 @@ function StackWithTheme() {
         }}
       >
         <Stack.Screen name="index" options={{ headerShown: false }} />
-        <Stack.Screen name="(auth)/phone" options={{ headerShown: false }} />
-        <Stack.Screen name="(auth)/otp" options={{ title: "인증 코드" }} />
+        <Stack.Screen name="(auth)/userid" options={{ headerShown: false }} />
         <Stack.Screen name="(main)/buddies" options={{ title: "친구" }} />
         <Stack.Screen name="(main)/chat/[id]" options={{ title: "채팅" }} />
         <Stack.Screen name="(main)/add-buddy/token" options={{ title: "친구 추가" }} />
@@ -47,9 +46,9 @@ export default function RootLayout() {
     void hydrate();
   }, [hydrate]);
 
-  // Acquire/refresh the Expo push token once authenticated (no-op without a relay).
+  // Acquire/refresh the Expo push token once ready (no-op without a relay).
   useEffect(() => {
-    if (status === "authed" && pushEnabled) void useNotificationsStore.getState().refresh();
+    if (status === "ready" && pushEnabled) void useNotificationsStore.getState().refresh();
   }, [status]);
 
   // Push listeners: foreground → ingest into the store; tap → deep-link to the chat.

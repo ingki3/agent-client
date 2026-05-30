@@ -1,7 +1,7 @@
 # E2E flows (Maestro)
 
-Covers the core USER_FLOW §3 journeys (TECH_SPEC §7). DEV auth mode means no backend is
-needed — login uses any phone number + OTP `000000`.
+Covers the core USER_FLOW §3 journeys (TECH_SPEC §7). Single-user onboarding: enter a
+Telegram user id (chat_id) once — no login/OTP.
 
 ## Prerequisites
 
@@ -31,11 +31,11 @@ maestro test -e BOT_TOKEN=123456789:ABC... e2e/03-add-live-buddy.yaml
 
 | File | Journey | Notes |
 |---|---|---|
-| `subflows/login.yaml` | DEV phone+OTP login | reused by every flow via `runFlow` |
-| `01-signup-first-chat.yaml` | 가입 → mock 채팅 → 스트리밍 응답 | |
+| `subflows/login.yaml` | 사용자 ID 입력 온보딩 | reused by every flow via `runFlow` |
+| `01-signup-first-chat.yaml` | 온보딩 → mock 채팅 → 스트리밍 응답 | |
 | `02-markdown-and-trace.yaml` | GFM 렌더 + trace 펼침 + M-01 + 마스킹 | |
 | `03-add-live-buddy.yaml` | 봇 토큰 → 실제 `getMe` → 등록 | needs `-e BOT_TOKEN=…` + network |
 | `04-friend-delete.yaml` | 길게 누름 → 삭제 | |
-| `05-logout.yaml` | 로그아웃 → GUEST 복귀 | |
+| `05-logout.yaml` | 초기화 → 온보딩 복귀 | |
 
 `appId` = `dev.simplist.agentclient.mockup` (from app.json). Update it if the bundle id changes.

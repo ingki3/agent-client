@@ -13,5 +13,5 @@ export async function signOut(): Promise<void> {
   await kv.clear();
   useTraceStore.getState().clear();
   useChatStore.setState({ byBuddy: {}, streamingMessageId: {} });
-  await useAuthStore.getState().logout(); // clears auth token + flips to GUEST
+  await useAuthStore.getState().reset(); // clears user id + flips to onboarding
 }

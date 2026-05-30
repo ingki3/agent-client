@@ -1,79 +1,57 @@
 /**
- * Auth store (TECH_SPEC §2.4). Drives the GUEST → AUTH state machine (USER_FLOW §1).
- * Token persists in SecureStore; everything else is in-memory session state.
+ * Session store (single-user). Replaces phone/OTP login with a one-time user id entry:
+ * the user enters their Telegram user id (= chat_id for the bot conversation) once, and
+ * it becomes the default address for every buddy — so sending works immediately without
+ * waiting to "learn" the chat from an incoming message.
+ *
+ * Kept the `useAuthStore` name + `status` shape to limit churn; semantics:
+ *   loading      — reading persisted state on splash
+ *   onboarding   — no user id yet → show the user-id entry screen
+ *   ready        — user id set → main app
  */
 import { create } from "zustand";
-import { authClient, AuthError } from "@/infrastructure/api/authClient";
 import { secureStore, SecureKeys } from "@/infrastructure/storage/secureStore";
 import { kv } from "@/infrastructure/storage/kv";
 
-const INSTALL_FLAG = "install_flag_v1";
+const INSTALL_FLAG = "install_flag_v2";
 
-type AuthStatus = "loading" | "guest" | "authed";
+type SessionStatus = "loading" | "onboarding" | "ready";
 
-type AuthState = {
-  status: AuthStatus;
-  token: string | null;
-  phone: string | null; // E.164
-  requestId: string | null;
-  devMode: boolean;
-  devCodeHint: string;
+type SessionState = {
+  status: SessionStatus;
+  userId: string | null; // Telegram user id / chat_id
 
-  /** Read persisted token on splash (S-01) to decide GUEST vs AUTH. */
   hydrate: () => Promise<void>;
-  sendCode: (phoneE164: string, channel?: "sms" | "voice") => Promise<void>;
-  verifyCode: (code: string) => Promise<void>;
-  logout: () => Promise<void>;
+  setUserId: (userId: string) => Promise<void>;
+  reset: () => Promise<void>;
 };
 
-export const useAuthStore = create<AuthState>((set, get) => ({
+export const useAuthStore = create<SessionState>((set) => ({
   status: "loading",
-  token: null,
-  phone: null,
-  requestId: null,
-  devMode: authClient.isDevMode,
-  devCodeHint: authClient.devCodeHint,
+  userId: null,
 
   hydrate: async () => {
-    // iOS Keychain (SecureStore) survives app-data clears and reinstalls, while kv
-    // (SQLite/localStorage) does not. Use a kv flag to detect a fresh install / cleared
-    // data and purge any orphaned tokens so we always start at GUEST — matches the
-    // logout-teardown contract and makes E2E `clearState` deterministic.
+    // iOS Keychain survives reinstall while kv does not — on a fresh install purge any
+    // orphaned session id so we always start at onboarding.
     const installed = await kv.get<boolean>(INSTALL_FLAG);
     if (!installed) {
-      await secureStore.remove(SecureKeys.authToken);
-      await secureStore.remove(SecureKeys.refreshToken);
-      await secureStore.remove(SecureKeys.phoneNumber);
+      await secureStore.remove(SecureKeys.userId);
       await kv.set(INSTALL_FLAG, true);
-      set({ token: null, phone: null, status: "guest" });
+      set({ userId: null, status: "onboarding" });
       return;
     }
-    const token = await secureStore.get(SecureKeys.authToken);
-    const phone = await secureStore.get(SecureKeys.phoneNumber);
-    set({ token, phone, status: token ? "authed" : "guest" });
+    const userId = await secureStore.get(SecureKeys.userId);
+    set({ userId, status: userId ? "ready" : "onboarding" });
   },
 
-  sendCode: async (phoneE164, channel = "sms") => {
-    const { requestId } = await authClient.sendCode(phoneE164, channel);
-    set({ phone: phoneE164, requestId });
+  setUserId: async (userId) => {
+    const id = userId.trim();
+    await secureStore.set(SecureKeys.userId, id);
+    set({ userId: id, status: "ready" });
   },
 
-  verifyCode: async (code) => {
-    const { requestId, phone } = get();
-    if (!requestId) throw new AuthError("unknown", "인증 요청이 만료되었습니다. 다시 시도해 주세요.");
-    const { accessToken, refreshToken } = await authClient.verifyCode(requestId, code);
-    await secureStore.set(SecureKeys.authToken, accessToken);
-    if (refreshToken) await secureStore.set(SecureKeys.refreshToken, refreshToken);
-    if (phone) await secureStore.set(SecureKeys.phoneNumber, phone);
-    set({ token: accessToken, status: "authed" });
-  },
-
-  logout: async () => {
-    const { token } = get();
-    if (token) await authClient.logout(token);
-    await secureStore.remove(SecureKeys.authToken);
-    await secureStore.remove(SecureKeys.refreshToken);
-    await secureStore.remove(SecureKeys.phoneNumber);
-    set({ token: null, phone: null, requestId: null, status: "guest" });
+  reset: async () => {
+    await secureStore.remove(SecureKeys.userId);
+    set({ userId: null, status: "onboarding" });
   },
 }));

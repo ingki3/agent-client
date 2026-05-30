@@ -48,9 +48,8 @@ export const secureStore = {
 };
 
 export const SecureKeys = {
-  authToken: "access_token_v1",
-  refreshToken: "refresh_token_v1",
-  phoneNumber: "phone_number_v1",
+  /** Telegram user id (= chat_id) — the single user's session identity. */
+  userId: "user_id_v1",
   botToken: (buddyId: string) => `bot_token_v1_${buddyId}`,
   expoPushToken: "expo_push_token_v1",
   deviceId: "device_id_v1",

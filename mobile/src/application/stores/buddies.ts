@@ -9,6 +9,7 @@ import { secureStore, SecureKeys } from "@/infrastructure/storage/secureStore";
 import { kv, KvKeys } from "@/infrastructure/storage/kv";
 import { pushEnabled } from "@/infrastructure/config";
 import { relayClient } from "@/infrastructure/api/relayClient";
+import { useAuthStore } from "@/application/stores/auth";
 import { seedBuddies } from "@/mock/seed";
 
 const ACCENTS: AccentSlot[] = [
@@ -70,12 +71,15 @@ export const useBuddiesStore = create<BuddiesState>((set, get) => ({
     const id = `buddy-${meta.id}`;
     const accent = ACCENTS[get().buddies.length % ACCENTS.length]!;
     const now = new Date().toISOString();
+    // Default the conversation address to the single user's id (chat_id), so sending
+    // works immediately. Still overridable by a learned incoming update.
+    const sessionUserId = useAuthStore.getState().userId;
     const buddy: Buddy = {
       id,
       displayName: displayName.trim() || meta.first_name,
       handle: meta.username ? `@${meta.username}` : meta.first_name,
       botId: meta.id,
-      chatId: null, // learned from the first incoming update
+      chatId: sessionUserId ? Number(sessionUserId) : null,
       live: true,
       supportsTrace: false, // upgraded if the gateway emits trace events
       accent,

@@ -1,21 +1,14 @@
-# Reusable: DEV-mode phone + OTP login → lands on the friends list (S-02 → S-03 → S-10).
+# Reusable: one-time user-id onboarding → lands on the friends list (S-02′ → S-10).
+# (Replaces the old phone + OTP login; single-user model.)
 # Caller must `launchApp` (usually with clearState: true) before runFlow.
-# Uses ids + hideKeyboard so the consent toggle / next button aren't hidden behind the
-# keyboard that the auto-focused inputs raise.
 appId: dev.simplist.agentclient.mockup
 ---
-- assertVisible: "전화번호 입력"
+- assertVisible: "Agent Client"
 - tapOn:
-    id: "phoneInput"
-- inputText: "1012345678"
+    id: "userIdInput"
+- inputText: "6233568410"
 - tapOn:
-    id: "agreeToggle"
-- tapOn:
-    id: "nextButton"
-- assertVisible: "인증 코드 입력"
-- tapOn:
-    id: "otpBoxes"
-- inputText: "000000" # DEV code (any 6 digits accepted when no gateway)
+    id: "startButton"
 # verify → hydrate → navigate is async; wait for the friends list to mount.
 - extendedWaitUntil:
     visible: "Work Buddy" # friends list (seed buddies) reached
