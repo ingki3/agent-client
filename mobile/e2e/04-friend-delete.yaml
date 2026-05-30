@@ -1,13 +1,16 @@
 # USER_FLOW §3.6 — 친구 삭제 (M-02 빠른 액션 → D-04 확인).
+# Modal contents are targeted by testID; waitForAnimationToEnd lets the slide-in settle
+# before the lookup.
 appId: dev.simplist.agentclient.mockup
 ---
 - launchApp:
     clearState: true
 - runFlow: subflows/login.yaml
 - longPressOn: "Knowledge Keeper"
-- assertVisible: "삭제" # M-02 quick-action sheet
-- tapOn: "삭제"
-- assertVisible: "친구를 삭제할까요?" # D-04 confirm dialog
+- waitForAnimationToEnd
 - tapOn:
-    id: "deleteConfirm"
+    id: "sheetDelete" # M-02 quick-action sheet
+- waitForAnimationToEnd
+- tapOn:
+    id: "deleteConfirm" # D-04 confirm dialog
 - assertNotVisible: "Knowledge Keeper"

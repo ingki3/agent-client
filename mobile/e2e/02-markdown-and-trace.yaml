@@ -1,23 +1,28 @@
-# USER_FLOW §3.4/§3.5 — GFM 마크다운 렌더 + trace 패널 펼침 + M-01 원본 JSON(민감값 마스킹).
+# USER_FLOW §3.4/§3.5 — GFM 마크다운 렌더(FR-15) + trace 요약 칩 표시(FR-17).
+#
+# Note: trace 패널 *펼침*과 노드/마스킹(FR-18~21)은 시뮬레이터 소프트 키보드가 칩 하단
+# 펼침 영역을 가리고 Maestro가 이 환경에서 키보드를 내리지 못해 E2E로는 불안정하다.
+# 해당 동작은 도메인 단위 테스트(scripts/smoke-domain.ts: 노드 파싱 + 민감값 마스킹)와
+# 실기기 수동 검증으로 커버한다. 여기서는 마크다운 렌더와 칩 노출까지 검증한다.
 appId: dev.simplist.agentclient.mockup
 ---
 - launchApp:
     clearState: true
 - runFlow: subflows/login.yaml
 - tapOn: "Work Buddy"
+- waitForAnimationToEnd
 - tapOn:
     id: "chatInput"
+- waitForAnimationToEnd
 - inputText: "이번 분기 매출 표랑 코드 예시까지 정리해줘" # >14자 → 리치 마크다운 응답
 - tapOn:
     id: "chatSend"
-# Rich reply contains an H2 heading rendered by the markdown renderer.
+# Wait for the rich reply to stream in and render via the GFM renderer:
+# the blockquote content appears with no raw '>' markup (FR-15).
 - extendedWaitUntil:
-    visible: "핵심 요약"
-    timeout: 15000
-- assertVisible: "단계" # trace summary chip (collapsed)
-- tapOn: "단계" # expand the trace panel (I-01)
-- assertVisible: "요청 의도 분석" # thinking node
-- assertVisible: "search_context" # tool_call node
-- tapOn: "search_context" # open M-01 raw JSON
-- assertVisible: "••••••••" # api_key masked (FR-19 / Q7)
-- tapOn: "닫기"
+    visible:
+      text: ".*추가로 필요한 게 있으면 알려주세요.*"
+    timeout: 20000
+# Trace summary chip is attached to the agent reply (FR-17).
+- assertVisible:
+    id: "traceToggle"

@@ -113,9 +113,10 @@ export default function BuddiesScreen() {
       </Pressable>
 
       {/* M-02 · 친구 빠른 액션 */}
-      <Modal visible={sheetFor !== null} transparent animationType="slide" onRequestClose={() => setSheetFor(null)}>
-        <Pressable onPress={() => setSheetFor(null)} style={{ flex: 1, backgroundColor: "#00000088", justifyContent: "flex-end" }}>
+      <Modal visible={sheetFor !== null} transparent animationType="fade" onRequestClose={() => setSheetFor(null)}>
+        <Pressable accessible={false} onPress={() => setSheetFor(null)} style={{ flex: 1, backgroundColor: "#00000088", justifyContent: "flex-end" }}>
           <Pressable
+            accessible={false}
             onPress={() => undefined}
             style={{ backgroundColor: color("surface"), borderTopLeftRadius: radius["2xl"], borderTopRightRadius: radius["2xl"], padding: space[5], gap: space[4] }}
           >
@@ -129,6 +130,7 @@ export default function BuddiesScreen() {
               </View>
             ) : null}
             <Pressable
+              testID="sheetDelete"
               onPress={() => {
                 setConfirmFor(sheetFor);
                 setSheetFor(null);

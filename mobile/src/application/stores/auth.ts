@@ -5,6 +5,9 @@
 import { create } from "zustand";
 import { authClient, AuthError } from "@/infrastructure/api/authClient";
 import { secureStore, SecureKeys } from "@/infrastructure/storage/secureStore";
+import { kv } from "@/infrastructure/storage/kv";
+
+const INSTALL_FLAG = "install_flag_v1";
 
 type AuthStatus = "loading" | "guest" | "authed";
 
@@ -32,6 +35,19 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   devCodeHint: authClient.devCodeHint,
 
   hydrate: async () => {
+    // iOS Keychain (SecureStore) survives app-data clears and reinstalls, while kv
+    // (SQLite/localStorage) does not. Use a kv flag to detect a fresh install / cleared
+    // data and purge any orphaned tokens so we always start at GUEST — matches the
+    // logout-teardown contract and makes E2E `clearState` deterministic.
+    const installed = await kv.get<boolean>(INSTALL_FLAG);
+    if (!installed) {
+      await secureStore.remove(SecureKeys.authToken);
+      await secureStore.remove(SecureKeys.refreshToken);
+      await secureStore.remove(SecureKeys.phoneNumber);
+      await kv.set(INSTALL_FLAG, true);
+      set({ token: null, phone: null, status: "guest" });
+      return;
+    }
     const token = await secureStore.get(SecureKeys.authToken);
     const phone = await secureStore.get(SecureKeys.phoneNumber);
     set({ token, phone, status: token ? "authed" : "guest" });

@@ -35,7 +35,8 @@ export function BuddyRow({
       onLongPress={onLongPress}
       delayLongPress={350}
       accessibilityRole="button"
-      accessibilityLabel={`${buddy.displayName} 채팅 열기`}
+      accessibilityLabel={buddy.displayName}
+      accessibilityHint="채팅 열기"
       style={({ pressed }) => ({
         flexDirection: "row",
         alignItems: "center",

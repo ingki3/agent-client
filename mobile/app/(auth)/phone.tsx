@@ -4,7 +4,7 @@
  * any valid-looking number proceeds and the OTP screen shows the dev code hint.
  */
 import { useState } from "react";
-import { View, Text, TextInput, Pressable, ScrollView } from "react-native";
+import { View, Text, TextInput, Pressable, ScrollView, KeyboardAvoidingView, Platform } from "react-native";
 import { useRouter } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useTheme } from "@/design/theme";
@@ -52,7 +52,11 @@ export default function PhoneScreen() {
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: color("surface") }}>
-      <ScrollView contentContainerStyle={{ padding: space[6], gap: space[5], flexGrow: 1 }}>
+      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : "height"}>
+      <ScrollView
+        contentContainerStyle={{ padding: space[6], gap: space[5] }}
+        keyboardShouldPersistTaps="handled"
+      >
         <View style={{ gap: space[2], marginTop: space[6] }}>
           <Text style={{ fontSize: 48 }}>💬</Text>
           <Text style={{ color: color("text-primary"), fontSize: fontSize["title-xl"], fontWeight: "700" }}>전화번호 입력</Text>
@@ -114,6 +118,7 @@ export default function PhoneScreen() {
         {error ? <Text style={{ color: color("error"), fontSize: fontSize["body-sm"] }}>{error}</Text> : null}
 
         <Pressable
+          testID="agreeToggle"
           onPress={() => setAgree((a) => !a)}
           accessibilityRole="checkbox"
           accessibilityState={{ checked: agree }}
@@ -132,9 +137,9 @@ export default function PhoneScreen() {
             DEV 모드 — 게이트웨이 미설정. 임의 번호로 진행되며 인증 코드는 다음 화면에 안내됩니다.
           </Text>
         ) : null}
+      </ScrollView>
 
-        <View style={{ flex: 1 }} />
-
+      <View style={{ paddingHorizontal: space[6], paddingTop: space[3], paddingBottom: space[6] }}>
         <Pressable
           testID="nextButton"
           onPress={handleNext}
@@ -153,7 +158,8 @@ export default function PhoneScreen() {
             {busy ? "전송 중…" : "다음"}
           </Text>
         </Pressable>
-      </ScrollView>
+      </View>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }

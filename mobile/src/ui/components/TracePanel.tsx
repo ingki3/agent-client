@@ -50,6 +50,7 @@ export function TracePanel({ messageId, streaming }: { messageId: string; stream
   return (
     <View style={{ marginTop: space[2], alignSelf: "flex-start", maxWidth: "100%" }}>
       <Pressable
+        testID="traceToggle"
         onPress={() => toggle(messageId)}
         accessibilityRole="button"
         accessibilityLabel={expanded ? "추론 과정 접기" : "추론 과정 펼치기"}

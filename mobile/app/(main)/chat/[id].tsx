@@ -81,6 +81,7 @@ export default function ChatScreen() {
         <FlatList
           ref={listRef}
           data={messages}
+          keyboardShouldPersistTaps="handled"
           keyExtractor={(m) => m.id}
           renderItem={({ item }) => (
             <ChatBubble

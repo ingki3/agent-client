@@ -1,0 +1,4 @@
+# Maestro workspace config — limits `maestro test e2e/` to the top-level journey flows
+# so the reusable helper in subflows/ is not executed as a standalone flow.
+flows:
+  - "*.yaml"

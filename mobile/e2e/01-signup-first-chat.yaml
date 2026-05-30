@@ -5,15 +5,19 @@ appId: dev.simplist.agentclient.mockup
     clearState: true
 - runFlow: subflows/login.yaml
 - tapOn: "Work Buddy"
+- waitForAnimationToEnd
 - assertVisible:
     id: "chatInput"
 - tapOn:
     id: "chatInput"
+- waitForAnimationToEnd
 - inputText: "안녕"
 - tapOn:
     id: "chatSend"
-- assertVisible: "안녕" # optimistic user bubble
+- assertVisible:
+    text: ".*안녕.*" # optimistic user bubble
 # Agent reply streams in; Work Buddy supports trace, so the summary chip appears.
 - extendedWaitUntil:
-    visible: "단계"
+    visible:
+      id: "traceToggle"
     timeout: 15000

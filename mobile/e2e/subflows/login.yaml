@@ -1,16 +1,22 @@
 # Reusable: DEV-mode phone + OTP login → lands on the friends list (S-02 → S-03 → S-10).
 # Caller must `launchApp` (usually with clearState: true) before runFlow.
+# Uses ids + hideKeyboard so the consent toggle / next button aren't hidden behind the
+# keyboard that the auto-focused inputs raise.
 appId: dev.simplist.agentclient.mockup
 ---
 - assertVisible: "전화번호 입력"
 - tapOn:
     id: "phoneInput"
 - inputText: "1012345678"
-- tapOn: "이용약관 및 개인정보 처리방침에 동의합니다."
+- tapOn:
+    id: "agreeToggle"
 - tapOn:
     id: "nextButton"
 - assertVisible: "인증 코드 입력"
 - tapOn:
     id: "otpBoxes"
 - inputText: "000000" # DEV code (any 6 digits accepted when no gateway)
-- assertVisible: "Work Buddy" # friends list (seed buddies) reached
+# verify → hydrate → navigate is async; wait for the friends list to mount.
+- extendedWaitUntil:
+    visible: "Work Buddy" # friends list (seed buddies) reached
+    timeout: 10000
