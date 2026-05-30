@@ -3,7 +3,7 @@
  * fetches metadata, then routes to the preview step. Invalid token → inline error.
  */
 import { useState } from "react";
-import { View, Text, TextInput, Pressable } from "react-native";
+import { View, Text, TextInput, Pressable, KeyboardAvoidingView, Platform } from "react-native";
 import { Stack, useRouter } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useTheme } from "@/design/theme";
@@ -54,6 +54,7 @@ export default function AddBuddyTokenScreen() {
           ),
         }}
       />
+      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : "height"}>
       <View style={{ flex: 1, padding: space[5], gap: space[4] }}>
         <Text style={{ color: color("text-secondary"), fontSize: fontSize["body-sm"], lineHeight: 20 }}>
           텔레그램 봇 토큰을 입력하세요. 기본 게이트웨이는 공개 Telegram Bot API이며, 실제 봇과 즉시 대화할 수 있습니다.
@@ -100,6 +101,7 @@ export default function AddBuddyTokenScreen() {
         <View style={{ flex: 1 }} />
 
         <Pressable
+          testID="tokenNext"
           onPress={handleNext}
           disabled={!canNext}
           accessibilityRole="button"
@@ -117,6 +119,7 @@ export default function AddBuddyTokenScreen() {
           </Text>
         </Pressable>
       </View>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }

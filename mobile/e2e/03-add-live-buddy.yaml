@@ -15,7 +15,9 @@ tags:
 - tapOn:
     id: "tokenInput"
 - inputText: ${BOT_TOKEN}
-- tapOn: "다음"
+- waitForAnimationToEnd
+- tapOn:
+    id: "tokenNext"
 # getMe success → preview screen (S-13) with the confirm button.
 - extendedWaitUntil:
     visible:
