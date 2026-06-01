@@ -22,6 +22,12 @@ export type TgMessage = {
   text?: string;
   chat: { id: number; type: string };
   from?: TgUser;
+  /** Relay (MTProto) sets this for messages the user sent (from any client) → render as "user". */
+  outgoing?: boolean;
+  /** Telegram webpage link preview; `image` is a relay path (prepend config.relayBase). */
+  preview?: { url: string; title?: string; description?: string; siteName?: string; image?: string };
+  /** Attached media; `url` is a relay path (prepend config.relayBase) that proxies the bytes. */
+  media?: { kind: string; name: string; mime: string; size?: number; url: string };
 };
 
 export type TgUpdate = {

@@ -17,21 +17,20 @@ import type { Buddy } from "@/domain/entities";
 export default function AddBuddyPreviewScreen() {
   const { color } = useTheme();
   const router = useRouter();
-  const token = useAddBuddyDraft((s) => s.token);
-  const meta = useAddBuddyDraft((s) => s.meta);
+  const peer = useAddBuddyDraft((s) => s.peer);
   const clearDraft = useAddBuddyDraft((s) => s.clear);
   const add = useBuddiesStore((s) => s.add);
 
-  const [displayName, setDisplayName] = useState(meta?.first_name ?? "");
+  const [displayName, setDisplayName] = useState(peer?.title ?? "");
   const [busy, setBusy] = useState(false);
   const [duplicate, setDuplicate] = useState<Buddy | null>(null);
 
-  if (!token || !meta) return <Redirect href="/add-buddy/token" />;
+  if (!peer) return <Redirect href="/add-buddy/token" />;
 
   const handleAdd = async () => {
     if (busy) return;
     setBusy(true);
-    const result = await add(token, meta, displayName);
+    const result = await add(peer, displayName);
     setBusy(false);
     if ("duplicateOf" in result) {
       setDuplicate(result.duplicateOf);
@@ -47,10 +46,10 @@ export default function AddBuddyPreviewScreen() {
       <Stack.Screen options={{ title: "미리보기" }} />
       <View style={{ flex: 1, padding: space[5], gap: space[5] }}>
         <View style={{ alignItems: "center", gap: space[3], marginTop: space[4] }}>
-          <Avatar name={meta.first_name} accent="accent-buddy-1" size={72} />
-          <Text style={{ color: color("text-primary"), fontSize: fontSize["title-md"], fontWeight: "700" }}>{meta.first_name}</Text>
-          {meta.username ? <Text style={{ color: color("text-secondary"), fontSize: fontSize.body }}>@{meta.username}</Text> : null}
-          <Text style={{ color: color("text-secondary"), fontSize: fontSize.caption }}>Telegram 호환 봇 · ID {meta.id}</Text>
+          <Avatar name={peer.title} accent="accent-buddy-1" size={72} />
+          <Text style={{ color: color("text-primary"), fontSize: fontSize["title-md"], fontWeight: "700" }}>{peer.title}</Text>
+          <Text style={{ color: color("text-secondary"), fontSize: fontSize.body }}>@{peer.username}</Text>
+          <Text style={{ color: color("text-secondary"), fontSize: fontSize.caption }}>Telegram · ID {peer.peerId}</Text>
         </View>
 
         <View style={{ gap: space[2] }}>
@@ -58,7 +57,7 @@ export default function AddBuddyPreviewScreen() {
           <TextInput
             value={displayName}
             onChangeText={setDisplayName}
-            placeholder={meta.first_name}
+            placeholder={peer.title}
             placeholderTextColor={color("text-secondary")}
             style={{
               backgroundColor: color("surface-elevated"),

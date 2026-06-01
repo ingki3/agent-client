@@ -48,10 +48,12 @@ export const secureStore = {
 };
 
 export const SecureKeys = {
-  /** Telegram user id (= chat_id) — the single user's session identity. */
-  userId: "user_id_v1",
-  botToken: (buddyId: string) => `bot_token_v1_${buddyId}`,
+  /** Logged-in Telegram account's own user id — cached for display + ready-state. */
+  tgUserId: "tg_user_id_v1",
+  /** Logged-in account's phone (for display). */
+  phone: "phone_v1",
   expoPushToken: "expo_push_token_v1",
   deviceId: "device_id_v1",
+  /** Bearer secret for the relay (also gates the MTProto session it holds). */
   deviceSecret: "device_secret_v1",
 } as const;

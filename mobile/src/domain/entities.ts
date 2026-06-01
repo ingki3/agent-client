@@ -19,14 +19,16 @@ export type Buddy = {
   displayName: string;
   /** @username from getMe, or a synthetic handle for mock buddies. */
   handle: string;
-  /** Telegram bot id (from getMe). null for local mock buddies. */
+  /** Telegram peer id (the bot's user id, == chatId for a private chat). null for mock. */
   botId: number | null;
+  /** Peer @username used to resolve/send via the relay (MTProto). undefined for mock. */
+  username?: string;
   /**
-   * The chat the app converses in. Learned from the first incoming update for a real
-   * bot; null until then. Mock buddies use a synthetic id.
+   * The chat the app converses in. For a live peer this equals the peer id. Mock buddies
+   * use a synthetic id.
    */
   chatId: number | string | null;
-  /** True when this buddy is backed by a real bot token in SecureStore. */
+  /** True when this buddy is a real resolved peer the relay talks to (vs a local mock). */
   live: boolean;
   /** Whether the gateway advertised trace-stream support (else fallback: body only). */
   supportsTrace: boolean;
@@ -36,6 +38,8 @@ export type Buddy = {
   unread: number;
   lastMessagePreview: string;
   lastMessageAt: string; // ISO
+  /** Id of the last message the user had seen — restored as the scroll position on re-open. */
+  lastReadId?: string;
 };
 
 export type MessageRole = "user" | "agent" | "system";
@@ -50,6 +54,28 @@ export type MessageStatus =
 
 export type TraceSummary = { thinkingSteps: number; toolCalls: number; elapsedMs: number };
 
+/** Link (webpage) preview attached to a message — title/description/image for a URL. */
+export type LinkPreview = {
+  url: string;
+  title?: string;
+  description?: string;
+  siteName?: string;
+  /** Fully-qualified image URL (relayBase already prepended) or undefined. */
+  image?: string;
+};
+
+export type AttachmentKind = "image" | "video" | "voice" | "audio" | "document";
+
+/** A file attached to a message. `uri` is the local file (for the sender's optimistic view). */
+export type Attachment = {
+  kind: AttachmentKind;
+  uri: string;
+  name: string;
+  mime: string;
+  size?: number;
+  durationMs?: number;
+};
+
 export type Message = {
   id: string;
   /** Stable client id for optimistic-update reconciliation (TECH_SPEC §12.3). */
@@ -61,6 +87,11 @@ export type Message = {
   status?: MessageStatus;
   traceId?: string;
   traceSummary?: TraceSummary;
+  preview?: LinkPreview;
+  /** One or more attachments shown in a single bubble (a media album / file group). */
+  attachments?: Attachment[];
+  /** Quoted message this one replies to (snippet shown above the bubble; links via Telegram reply). */
+  replyTo?: { messageId?: number; text: string };
 };
 
 export type TraceNodeKind = "thinking" | "tool_call" | "tool_result";

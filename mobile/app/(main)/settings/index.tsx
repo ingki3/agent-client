@@ -15,7 +15,8 @@ import { pushEnabled } from "@/infrastructure/config";
 export default function SettingsScreen() {
   const { color } = useTheme();
   const router = useRouter();
-  const userId = useAuthStore((s) => s.userId);
+  const phone = useAuthStore((s) => s.phone);
+  const tgUserId = useAuthStore((s) => s.tgUserId);
   const permission = useNotificationsStore((s) => s.permission);
   const enableNotifications = useNotificationsStore((s) => s.enable);
   const [confirm, setConfirm] = useState(false);
@@ -42,8 +43,9 @@ export default function SettingsScreen() {
     <SafeAreaView style={{ flex: 1, backgroundColor: color("surface") }} edges={["bottom"]}>
       <View style={{ padding: space[5] }}>
         <View style={{ backgroundColor: color("surface-elevated"), borderRadius: radius.xl, padding: space[5], gap: space[1] }}>
-          <Text style={{ color: color("text-secondary"), fontSize: fontSize.caption }}>사용자 ID</Text>
-          <Text style={{ color: color("text-primary"), fontSize: fontSize["title-sm"], fontWeight: "700" }}>{userId ?? "미설정"}</Text>
+          <Text style={{ color: color("text-secondary"), fontSize: fontSize.caption }}>로그인 계정</Text>
+          <Text style={{ color: color("text-primary"), fontSize: fontSize["title-sm"], fontWeight: "700" }}>{phone ?? "미설정"}</Text>
+          {tgUserId ? <Text style={{ color: color("text-secondary"), fontSize: fontSize.caption }}>ID {tgUserId}</Text> : null}
         </View>
       </View>
 
@@ -65,7 +67,7 @@ export default function SettingsScreen() {
           <View style={{ backgroundColor: color("surface"), borderRadius: radius.xl, padding: space[5], gap: space[4], width: "100%", maxWidth: 360 }}>
             <Text style={{ color: color("text-primary"), fontSize: fontSize["title-sm"], fontWeight: "700" }}>초기화할까요?</Text>
             <Text style={{ color: color("text-secondary"), fontSize: fontSize["body-sm"] }}>
-              사용자 ID, 봇 토큰, 로컬 대화 캐시가 모두 삭제됩니다.
+              텔레그램 로그아웃(릴레이 세션 해제) 후 로컬 대화 캐시가 모두 삭제됩니다.
             </Text>
             <View style={{ flexDirection: "row", justifyContent: "flex-end", gap: space[4] }}>
               <Pressable onPress={() => setConfirm(false)} style={{ minHeight: touch.min, justifyContent: "center", paddingHorizontal: space[3] }}>

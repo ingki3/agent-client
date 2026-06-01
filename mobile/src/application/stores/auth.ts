@@ -1,57 +1,137 @@
 /**
- * Session store (single-user). Replaces phone/OTP login with a one-time user id entry:
- * the user enters their Telegram user id (= chat_id for the bot conversation) once, and
- * it becomes the default address for every buddy — so sending works immediately without
- * waiting to "learn" the chat from an incoming message.
+ * Session store (single-user). Auth = Telegram **user-account** login (MTProto), driven
+ * through the relay: phone → code → optional 2FA cloud password. The relay holds the
+ * actual Telegram session; the app only keeps the relay deviceSecret (in relayClient) and
+ * caches the logged-in tgUserId/phone for display + a fast ready-state on launch.
  *
- * Kept the `useAuthStore` name + `status` shape to limit churn; semantics:
- *   loading      — reading persisted state on splash
- *   onboarding   — no user id yet → show the user-id entry screen
- *   ready        — user id set → main app
+ *   loading     — reading persisted state on splash
+ *   onboarding  — not signed in → phone entry
+ *   code        — code requested → code entry
+ *   2fa         — cloud password required → 2FA entry
+ *   ready       — signed in → main app
  */
 import { create } from "zustand";
 import { secureStore, SecureKeys } from "@/infrastructure/storage/secureStore";
 import { kv } from "@/infrastructure/storage/kv";
+import { relayClient } from "@/infrastructure/api/relayClient";
 
-const INSTALL_FLAG = "install_flag_v2";
+const INSTALL_FLAG = "install_flag_v3";
 
-type SessionStatus = "loading" | "onboarding" | "ready";
+type SessionStatus = "loading" | "onboarding" | "code" | "2fa" | "ready";
 
 type SessionState = {
   status: SessionStatus;
-  userId: string | null; // Telegram user id / chat_id
+  phone: string | null;
+  tgUserId: number | null;
+  error: string | null;
+  /** Whether the relay currently holds a live MTProto session (can send/receive). */
+  connected: boolean;
 
   hydrate: () => Promise<void>;
-  setUserId: (userId: string) => Promise<void>;
+  startLogin: (phone: string) => Promise<boolean>;
+  submitCode: (code: string) => Promise<boolean>;
+  submit2fa: (password: string) => Promise<boolean>;
+  /** Re-poll the relay session connectivity (for the chat "connected" indicator). */
+  refreshStatus: () => Promise<void>;
   reset: () => Promise<void>;
 };
 
-export const useAuthStore = create<SessionState>((set) => ({
+export const useAuthStore = create<SessionState>((set, get) => ({
   status: "loading",
-  userId: null,
+  phone: null,
+  tgUserId: null,
+  error: null,
+  connected: false,
 
   hydrate: async () => {
     // iOS Keychain survives reinstall while kv does not — on a fresh install purge any
-    // orphaned session id so we always start at onboarding.
+    // orphaned credentials so we always start at onboarding.
     const installed = await kv.get<boolean>(INSTALL_FLAG);
     if (!installed) {
-      await secureStore.remove(SecureKeys.userId);
+      await secureStore.remove(SecureKeys.tgUserId);
+      await secureStore.remove(SecureKeys.phone);
+      await secureStore.remove(SecureKeys.deviceSecret);
       await kv.set(INSTALL_FLAG, true);
-      set({ userId: null, status: "onboarding" });
+      set({ status: "onboarding" });
       return;
     }
-    const userId = await secureStore.get(SecureKeys.userId);
-    set({ userId, status: userId ? "ready" : "onboarding" });
+
+    const cachedId = await secureStore.get(SecureKeys.tgUserId);
+    const phone = await secureStore.get(SecureKeys.phone);
+    if (!cachedId) {
+      set({ status: "onboarding" });
+      return;
+    }
+    // Optimistically ready from cache, then confirm the relay still holds an active session.
+    set({ status: "ready", tgUserId: Number(cachedId), phone });
+    const remote = await relayClient.authStatus();
+    if (remote && remote.status !== "active") {
+      await secureStore.remove(SecureKeys.tgUserId);
+      set({ status: "onboarding", tgUserId: null, connected: false });
+    } else {
+      set({ connected: !!remote?.connected });
+    }
   },
 
-  setUserId: async (userId) => {
-    const id = userId.trim();
-    await secureStore.set(SecureKeys.userId, id);
-    set({ userId: id, status: "ready" });
+  refreshStatus: async () => {
+    const remote = await relayClient.authStatus();
+    // null = relay unreachable → treat as not connected. Don't sign the user out on a
+    // transient failure; only an explicit non-active status downgrades onboarding.
+    set({ connected: !!remote?.connected });
+    if (remote && remote.status !== "active" && get().status === "ready") {
+      await secureStore.remove(SecureKeys.tgUserId);
+      set({ status: "onboarding", tgUserId: null, connected: false });
+    }
+  },
+
+  startLogin: async (phone) => {
+    set({ error: null });
+    const r = await relayClient.authStart(phone.trim());
+    if (!r.ok) {
+      set({ error: r.error });
+      return false;
+    }
+    await secureStore.set(SecureKeys.phone, phone.trim());
+    set({ status: "code", phone: phone.trim() });
+    return true;
+  },
+
+  submitCode: async (code) => {
+    set({ error: null });
+    const r = await relayClient.authCode(code.trim());
+    if (!r.ok) {
+      set({ error: r.error });
+      return false;
+    }
+    if (r.needs2fa) {
+      set({ status: "2fa" });
+      return true;
+    }
+    if (r.signedIn && r.tgUserId != null) {
+      await secureStore.set(SecureKeys.tgUserId, String(r.tgUserId));
+      set({ status: "ready", tgUserId: r.tgUserId, connected: true });
+      return true;
+    }
+    set({ error: "unknown" });
+    return false;
+  },
+
+  submit2fa: async (password) => {
+    set({ error: null });
+    const r = await relayClient.auth2fa(password);
+    if (!r.ok || !r.signedIn || r.tgUserId == null) {
+      set({ error: r.ok ? "unknown" : r.error });
+      return false;
+    }
+    await secureStore.set(SecureKeys.tgUserId, String(r.tgUserId));
+    set({ status: "ready", tgUserId: r.tgUserId, connected: true });
+    return true;
   },
 
   reset: async () => {
-    await secureStore.remove(SecureKeys.userId);
-    set({ userId: null, status: "onboarding" });
+    await relayClient.authLogout();
+    await secureStore.remove(SecureKeys.tgUserId);
+    await secureStore.remove(SecureKeys.phone);
+    set({ status: "onboarding", phone: null, tgUserId: null, error: null, connected: false });
   },
 }));

@@ -15,8 +15,9 @@ export async function sendPushes(items: PushItem[]): Promise<void> {
   const messages: ExpoPushMessage[] = [];
   for (const it of items) {
     if (!Expo.isExpoPushToken(it.expoPushToken)) {
-      log.warn("invalid expo push token, dropping device");
-      store.removePushToken(it.expoPushToken);
+      // Empty token = pull-only device (push not granted / simulator); a malformed token
+      // can still pull. Do NOT delete the device here — only a real DeviceNotRegistered
+      // receipt (below) prunes it. (Deleting on empty token broke relay-pull receive.)
       continue;
     }
     const text = it.m.text ?? "";

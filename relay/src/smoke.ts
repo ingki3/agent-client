@@ -59,7 +59,7 @@ async function main() {
     if (pull.updates.length) {
       console.log(`✓ /pull returned ${pull.updates.length} update(s):`);
       for (const u of pull.updates) console.log("   →", JSON.stringify(u.message?.text));
-      since = pull.cursor;
+      since = pull.cursor + 1; // next-expected id (relay pull is >= since)
       // idempotency: re-pull at the new cursor should be empty
       const again = (await (
         await fetch(`${base}/pull?deviceId=${deviceId}&botId=${botId}&since=${since}`, { headers: auth })

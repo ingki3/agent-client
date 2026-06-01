@@ -25,7 +25,9 @@ function StackWithTheme() {
         }}
       >
         <Stack.Screen name="index" options={{ headerShown: false }} />
-        <Stack.Screen name="(auth)/userid" options={{ headerShown: false }} />
+        <Stack.Screen name="(auth)/phone" options={{ headerShown: false }} />
+        <Stack.Screen name="(auth)/code" options={{ headerShown: false }} />
+        <Stack.Screen name="(auth)/twofa" options={{ headerShown: false }} />
         <Stack.Screen name="(main)/buddies" options={{ title: "친구" }} />
         <Stack.Screen name="(main)/chat/[id]" options={{ title: "채팅" }} />
         <Stack.Screen name="(main)/add-buddy/token" options={{ title: "친구 추가" }} />

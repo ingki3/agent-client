@@ -7,8 +7,9 @@
  * `streaming` enables the safe-incomplete-token policy (no raw `**` / dangling
  * fences shown mid-stream) and renders an unterminated code fence as a loading box.
  */
-import { memo, type ReactNode } from "react";
-import { View, Text, Linking, Platform, type TextStyle } from "react-native";
+import { memo, useState, type ReactNode } from "react";
+import { View, Text, Linking, Platform, Pressable, ScrollView, type TextStyle } from "react-native";
+import * as Clipboard from "expo-clipboard";
 import { useTheme } from "@/design/theme";
 import { fontSize, radius, space } from "@/design/tokens";
 import { parseMarkdown } from "@/domain/markdown/parse";
@@ -78,6 +79,63 @@ function alignStyle(a: Align): TextStyle {
   return { textAlign: a === "center" ? "center" : a === "right" ? "right" : "left" };
 }
 
+/** Fenced code block — header bar (language + copy) over a horizontally-scrollable
+ *  monospace body, à la Telegram/IDE. Long lines scroll instead of wrapping. */
+function CodeBlock({ lang, text, loading }: { lang: string | null; text: string; loading: boolean }) {
+  const { color } = useTheme();
+  const [copied, setCopied] = useState(false);
+  const onCopy = () => {
+    void Clipboard.setStringAsync(text);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
+  return (
+    <View
+      style={{
+        marginVertical: space[2],
+        borderRadius: radius.md,
+        overflow: "hidden",
+        borderWidth: 1,
+        borderColor: color("border"),
+      }}
+    >
+      <View
+        style={{
+          flexDirection: "row",
+          alignItems: "center",
+          justifyContent: "space-between",
+          backgroundColor: color("surface-elevated"),
+          paddingHorizontal: space[3],
+          paddingVertical: space[2],
+          borderBottomWidth: 1,
+          borderBottomColor: color("border"),
+        }}
+      >
+        <Text style={{ color: color("text-secondary"), fontSize: fontSize.caption, fontFamily: MONO }}>
+          {lang ?? "code"}
+        </Text>
+        {loading ? null : (
+          <Pressable onPress={onCopy} hitSlop={8} accessibilityRole="button" accessibilityLabel="코드 복사">
+            <Text style={{ color: copied ? color("primary") : color("text-secondary"), fontSize: fontSize.caption, fontWeight: "600" }}>
+              {copied ? "복사됨" : "⧉ 복사"}
+            </Text>
+          </Pressable>
+        )}
+      </View>
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        style={{ backgroundColor: color("surface") }}
+        contentContainerStyle={{ padding: space[3] }}
+      >
+        <Text selectable style={{ fontFamily: MONO, fontSize: fontSize.code, color: color("text-primary"), lineHeight: fontSize.code * 1.5 }}>
+          {loading ? "▍" : text}
+        </Text>
+      </ScrollView>
+    </View>
+  );
+}
+
 function Blocks({ blocks, baseColor }: { blocks: Block[]; baseColor: string }) {
   const { color } = useTheme();
   const lineHeight = fontSize.body * 1.5;
@@ -111,28 +169,7 @@ function Blocks({ blocks, baseColor }: { blocks: Block[]; baseColor: string }) {
               </Text>
             );
           case "code":
-            return (
-              <View
-                key={key}
-                style={{
-                  backgroundColor: color("surface-elevated"),
-                  borderRadius: radius.md,
-                  borderWidth: 1,
-                  borderColor: color("border"),
-                  padding: space[3],
-                  marginVertical: space[2],
-                }}
-              >
-                {b.lang ? (
-                  <Text style={{ color: color("text-secondary"), fontSize: fontSize.caption, marginBottom: space[1] }}>
-                    {b.lang}
-                  </Text>
-                ) : null}
-                <Text style={{ fontFamily: MONO, fontSize: fontSize.code, color: color("text-primary") }}>
-                  {b.loading ? "▍" : b.text}
-                </Text>
-              </View>
-            );
+            return <CodeBlock key={key} lang={b.lang} text={b.text} loading={b.loading} />;
           case "blockquote":
             return (
               <View

@@ -2,6 +2,7 @@ import { View, Text, Pressable } from "react-native";
 import { useTheme } from "@/design/theme";
 import { fontSize, radius, space } from "@/design/tokens";
 import type { Buddy } from "@/domain/entities";
+import { useAuthStore } from "@/application/stores/auth";
 import { Avatar } from "./Avatar";
 import { UnreadBadge } from "./Badge";
 
@@ -29,6 +30,9 @@ export function BuddyRow({
   variant?: "inbox" | "list";
 }) {
   const { color } = useTheme();
+  // Live (real peer) connectivity = the relay's MTProto session; mock buddies keep their flag.
+  const sessionConnected = useAuthStore((s) => s.connected);
+  const connected = buddy.live ? sessionConnected : buddy.connected;
   return (
     <Pressable
       onPress={onPress}
@@ -109,11 +113,11 @@ export function BuddyRow({
                 width: 8,
                 height: 8,
                 borderRadius: radius.full,
-                backgroundColor: color(buddy.connected ? "success" : "offline"),
+                backgroundColor: color(connected ? "success" : "offline"),
               }}
             />
             <Text style={{ color: color("text-secondary"), fontSize: fontSize.caption }}>
-              {buddy.connected ? "연결됨" : "연결 안 됨"} · {buddy.handle}
+              {connected ? "연결됨" : "연결 안 됨"} · {buddy.handle}
             </Text>
           </View>
         ) : null}

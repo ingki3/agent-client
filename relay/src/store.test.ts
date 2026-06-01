@@ -41,8 +41,10 @@ check("pull since=0 returns 2 (dup ignored)", all.length === 2);
 check("pull is ordered by update_id", all[0]!.update_id === 10 && all[1]!.update_id === 11);
 check("decrypted token usable for poll", store.decryptToken({ bot_id: 999, gateway: "", enc_bot_token: encrypt(tok), tg_offset: 0, status: "active" }) === tok);
 
+// `since` is the next-expected id (client sends last+1), so re-pull at cursor+1 is empty.
 const cursor = all[all.length - 1]!.update_id;
-check("re-pull at cursor is empty (idempotent)", store.pullUpdates(999, cursor).length === 0);
+check("re-pull past cursor is empty (idempotent)", store.pullUpdates(999, cursor + 1).length === 0);
+check("re-pull AT last id re-returns it (inclusive >=)", store.pullUpdates(999, cursor).length === 1);
 
 // push targets resolve the device's expo token + buddy
 const targets = store.pushTargets(999);
@@ -52,6 +54,35 @@ check("pushTargets resolves device", targets.length === 1 && targets[0]!.buddy_i
 store.unsubscribe("d1", 999);
 const reaped = store.reapOrphanBots();
 check("orphan bot reaped on last unsubscribe", reaped.includes(999));
+
+// ── MTProto user-session + peer cursor ──
+const fakeSession = "1AaBbCc-fake-string-session-payload-0987654321";
+store.upsertUserSession({ deviceId: "d1", phone: "+10000000000", status: "pending" });
+check("user session created pending", store.getUserSession("d1")?.status === "pending");
+store.setSessionString("d1", fakeSession, 555);
+const sess = store.getUserSession("d1");
+check("session activates with tgUserId", sess?.status === "active" && sess?.tg_user_id === 555);
+check("session string encrypted at rest", !!sess?.enc_session && !sess.enc_session.includes(fakeSession));
+check("session decrypts back", store.decryptSession(sess!) === fakeSession);
+check("activeSessions returns it", store.activeSessions().some((s) => s.device_id === "d1"));
+
+// peer + monotonic per-peer cursor (the getUpdates-offset stand-in)
+store.upsertPeer({ deviceId: "d1", peerId: 7001, username: "agentbot", title: "Agent", accessHash: "123" });
+store.upsertPeer({ deviceId: "d1", peerId: 7002, username: "otherbot", title: "Other" });
+const s1 = store.nextPeerSeq("d1", 7001);
+const s2 = store.nextPeerSeq("d1", 7001);
+const o1 = store.nextPeerSeq("d1", 7002);
+check("nextPeerSeq strictly increases per peer", s1 === 1 && s2 === 2);
+check("nextPeerSeq isolated across peers", o1 === 1);
+
+// an MTProto-shaped update buffers + pulls via the SAME store path as bot updates
+store.subscribe("d1", 7001, "buddy-7001");
+store.insertUpdate(7001, mk(1, "reply from bot as agent"));
+const mtPulled = store.pullUpdates(7001, 0);
+check("MTProto update buffered + pulled by cursor", mtPulled.length === 1 && mtPulled[0]!.message?.text === "reply from bot as agent");
+
+store.revokeSession("d1");
+check("revokeSession clears session string", store.getUserSession("d1")?.status === "revoked" && !store.getUserSession("d1")?.enc_session);
 
 console.log(`\n== ${ok} passed, ${bad} failed ==\n`);
 process.exit(bad > 0 ? 1 : 0);

@@ -32,7 +32,7 @@
     "extra": {
       "gateway": "https://api.telegram.org",
       "apiBase": null,
-      "relayBase": null
+      "relayBase": "https://telegram-relay.2prostream.com"
     },
     "experiments": {
       "typedRoutes": false

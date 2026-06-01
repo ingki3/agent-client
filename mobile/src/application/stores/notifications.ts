@@ -18,14 +18,13 @@ type NotifState = {
   refresh: () => Promise<void>;
 };
 
-async function liveBots(): Promise<RelayBot[]> {
-  const bots: RelayBot[] = [];
-  for (const b of useBuddiesStore.getState().buddies) {
-    if (!b.live || b.botId == null) continue;
-    const token = await secureStore.get(SecureKeys.botToken(b.id));
-    if (token) bots.push({ buddyId: b.id, botToken: token, botId: b.botId });
-  }
-  return bots;
+/** Live buddies are resolved peers — no device-side token; the relay's user session
+ *  receives for them, so we register just the subscription (buddyId + peer id). */
+function liveBots(): RelayBot[] {
+  return useBuddiesStore
+    .getState()
+    .buddies.filter((b): b is typeof b & { botId: number } => b.live && b.botId != null)
+    .map((b) => ({ buddyId: b.id, botId: b.botId }));
 }
 
 export const useNotificationsStore = create<NotifState>((set, get) => ({
@@ -39,24 +38,27 @@ export const useNotificationsStore = create<NotifState>((set, get) => ({
     set({ expoPushToken: token, permission: token ? "granted" : status });
     if (!token) return;
     await secureStore.set(SecureKeys.expoPushToken, token);
-    const bots = await liveBots();
+    const bots = liveBots();
     if (bots.length) await relayClient.register(token, bots);
   },
 
   refresh: async () => {
     if (!pushEnabled) return;
     const status = await pushClient.getPermissionStatus();
-    const stored = await secureStore.get(SecureKeys.expoPushToken);
-    set({ permission: status, expoPushToken: stored });
+    let token = await secureStore.get(SecureKeys.expoPushToken);
+    set({ permission: status, expoPushToken: token });
     if (status === "granted") {
-      // Re-acquire (token can rotate) and re-register if it changed.
-      const token = await pushClient.ensurePermissionAndToken();
-      if (token && token !== stored) {
+      // Re-acquire (token can rotate).
+      const fresh = await pushClient.ensurePermissionAndToken();
+      if (fresh && fresh !== token) {
+        token = fresh;
         await secureStore.set(SecureKeys.expoPushToken, token);
         set({ expoPushToken: token });
-        const bots = await liveBots();
-        if (bots.length) await relayClient.register(token, bots);
       }
     }
+    // Self-heal: re-register live buddies every launch (idempotent) so a dropped device /
+    // subscription is recreated — required for relay-pull receive to keep working.
+    const bots = liveBots();
+    if (bots.length) await relayClient.register(token ?? "", bots);
   },
 }));

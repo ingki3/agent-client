@@ -1,17 +1,15 @@
-/** Transient draft shared between S-12 (token) and S-13 (preview). */
+/** Transient draft shared between S-12 (username) and S-13 (preview). */
 import { create } from "zustand";
-import type { TgUser } from "@/infrastructure/api/telegramBotApi";
+import type { ResolvedPeer } from "@/infrastructure/api/relayClient";
 
 type DraftState = {
-  token: string | null;
-  meta: TgUser | null;
-  set: (token: string, meta: TgUser) => void;
+  peer: ResolvedPeer | null;
+  set: (peer: ResolvedPeer) => void;
   clear: () => void;
 };
 
 export const useAddBuddyDraft = create<DraftState>((set) => ({
-  token: null,
-  meta: null,
-  set: (token, meta) => set({ token, meta }),
-  clear: () => set({ token: null, meta: null }),
+  peer: null,
+  set: (peer) => set({ peer }),
+  clear: () => set({ peer: null }),
 }));

@@ -1,6 +1,6 @@
 /**
- * Logout teardown (UC-01, TECH_SPEC §12.9): invalidate the session token (best-effort),
- * then wipe all local state — auth tokens, bot tokens, buddies, and chat history.
+ * Logout teardown: unregister from the relay + log the MTProto session out (best-effort,
+ * inside the stores' reset()), then wipe all local state — buddies and chat history.
  */
 import { useAuthStore } from "@/application/stores/auth";
 import { useBuddiesStore } from "@/application/stores/buddies";

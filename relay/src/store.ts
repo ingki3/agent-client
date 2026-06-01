@@ -40,6 +40,26 @@ db.exec(`
     received_at INTEGER NOT NULL,
     PRIMARY KEY (bot_id, update_id)
   );
+  -- MTProto user-account sessions (GramJS). One Telegram account per device (single-user).
+  CREATE TABLE IF NOT EXISTS user_sessions (
+    device_id TEXT PRIMARY KEY,
+    enc_session TEXT,                       -- encrypt(StringSession); null until signIn completes
+    tg_user_id INTEGER,                     -- logged-in account's own id (from getMe)
+    phone TEXT,
+    status TEXT NOT NULL DEFAULT 'pending', -- pending | active | revoked
+    created_at INTEGER NOT NULL,
+    last_seen_at INTEGER NOT NULL
+  );
+  -- Resolved peers (the bots/chats the user talks to). peer_id mirrors a bot_id on /pull.
+  CREATE TABLE IF NOT EXISTS peers (
+    device_id TEXT NOT NULL,
+    peer_id INTEGER NOT NULL,
+    username TEXT,
+    title TEXT,
+    access_hash TEXT,                       -- int64 as string, for InputPeerUser
+    local_seq INTEGER NOT NULL DEFAULT 0,   -- monotonic cursor; stands in for getUpdates offset
+    PRIMARY KEY (device_id, peer_id)
+  );
 `);
 
 export type DeviceRow = {
@@ -56,6 +76,21 @@ export type BotRow = {
   status: string;
 };
 export type PushTarget = { device_id: string; expo_push_token: string; buddy_id: string };
+export type UserSessionRow = {
+  device_id: string;
+  enc_session: string | null;
+  tg_user_id: number | null;
+  phone: string | null;
+  status: string;
+};
+export type PeerRow = {
+  device_id: string;
+  peer_id: number;
+  username: string | null;
+  title: string | null;
+  access_hash: string | null;
+  local_seq: number;
+};
 
 export const store = {
   upsertDevice(d: { deviceId: string; secretHash: string; expoPushToken: string; platform: string }) {
@@ -150,10 +185,14 @@ export const store = {
     ).run(botId, u.update_id, JSON.stringify(u), Date.now());
   },
 
+  // `since` is Telegram-getUpdates style: the NEXT expected update_id (the client sends
+  // last_seen + 1), so the lower bound is inclusive (>=). Using > here dropped the message
+  // whose id equalled the client's offset when it arrived a poll-cycle late. The client
+  // dedupes by message id, so the inclusive bound never causes a visible duplicate.
   pullUpdates(botId: number, since: number, limit = 100): TgUpdate[] {
     const rows = db
       .prepare(
-        "SELECT payload_json FROM updates WHERE bot_id=? AND update_id>? ORDER BY update_id ASC LIMIT ?",
+        "SELECT payload_json FROM updates WHERE bot_id=? AND update_id>=? ORDER BY update_id ASC LIMIT ?",
       )
       .all(botId, since, limit) as { payload_json: string }[];
     return rows.map((r) => JSON.parse(r.payload_json) as TgUpdate);
@@ -182,6 +221,79 @@ export const store = {
   healthSnapshot() {
     const bots = db.prepare("SELECT bot_id, tg_offset, last_poll_at, status FROM bots").all();
     const devices = (db.prepare("SELECT COUNT(*) c FROM devices").get() as { c: number }).c;
-    return { bots, devices };
+    const sessions = db.prepare("SELECT device_id, tg_user_id, status FROM user_sessions").all();
+    return { bots, devices, sessions };
+  },
+
+  // ─── MTProto user sessions ────────────────────────────────────────────────
+  upsertUserSession(s: { deviceId: string; phone?: string; status?: string }) {
+    const now = Date.now();
+    db.prepare(
+      `INSERT INTO user_sessions (device_id, phone, status, created_at, last_seen_at)
+       VALUES (@id, @phone, @status, @now, @now)
+       ON CONFLICT(device_id) DO UPDATE SET phone=COALESCE(@phone, phone),
+         status=COALESCE(@status, status), last_seen_at=@now`,
+    ).run({ id: s.deviceId, phone: s.phone ?? null, status: s.status ?? "pending", now });
+  },
+
+  setSessionString(deviceId: string, sessionString: string, tgUserId: number) {
+    db.prepare(
+      `UPDATE user_sessions SET enc_session=?, tg_user_id=?, status='active', last_seen_at=? WHERE device_id=?`,
+    ).run(encrypt(sessionString), tgUserId, Date.now(), deviceId);
+  },
+
+  getUserSession(deviceId: string): UserSessionRow | undefined {
+    return db.prepare("SELECT * FROM user_sessions WHERE device_id=?").get(deviceId) as
+      | UserSessionRow
+      | undefined;
+  },
+
+  /** Active sessions with a saved string — the set to reconnect on boot. */
+  activeSessions(): UserSessionRow[] {
+    return db
+      .prepare("SELECT * FROM user_sessions WHERE status='active' AND enc_session IS NOT NULL")
+      .all() as UserSessionRow[];
+  },
+
+  decryptSession(row: UserSessionRow): string {
+    if (!row.enc_session) throw new Error("no session string");
+    return decrypt(row.enc_session);
+  },
+
+  revokeSession(deviceId: string) {
+    db.prepare("UPDATE user_sessions SET status='revoked', enc_session=NULL WHERE device_id=?").run(deviceId);
+  },
+
+  // ─── Peers (resolved bots/chats the user talks to) ────────────────────────
+  upsertPeer(p: { deviceId: string; peerId: number; username?: string; title?: string; accessHash?: string }) {
+    db.prepare(
+      `INSERT INTO peers (device_id, peer_id, username, title, access_hash, local_seq)
+       VALUES (@dev, @peer, @user, @title, @hash, 0)
+       ON CONFLICT(device_id, peer_id) DO UPDATE SET
+         username=COALESCE(@user, username), title=COALESCE(@title, title),
+         access_hash=COALESCE(@hash, access_hash)`,
+    ).run({
+      dev: p.deviceId,
+      peer: p.peerId,
+      user: p.username ?? null,
+      title: p.title ?? null,
+      hash: p.accessHash ?? null,
+    });
+  },
+
+  getPeer(deviceId: string, peerId: number): PeerRow | undefined {
+    return db.prepare("SELECT * FROM peers WHERE device_id=? AND peer_id=?").get(deviceId, peerId) as
+      | PeerRow
+      | undefined;
+  },
+
+  /** Atomically bump and return the next monotonic cursor for a peer's buffered updates. */
+  nextPeerSeq(deviceId: string, peerId: number): number {
+    const row = db
+      .prepare(
+        `UPDATE peers SET local_seq = local_seq + 1 WHERE device_id=? AND peer_id=? RETURNING local_seq`,
+      )
+      .get(deviceId, peerId) as { local_seq: number } | undefined;
+    return row?.local_seq ?? 0;
   },
 };

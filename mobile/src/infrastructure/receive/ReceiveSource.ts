@@ -2,25 +2,20 @@
  * ReceiveSource port — abstracts WHERE incoming agent messages come from, so the chat
  * store doesn't care. Two implementations, selected once by config.relayBase:
  *
- *  - TelegramPollSource (no relay): long-polls Telegram getUpdates directly while a chat
- *    is open (today's behavior, foreground-only).
- *  - RelayPullSource (relay set): NEVER touches Telegram getUpdates (the relay is the sole
- *    consumer). Pulls buffered updates from the relay; realtime arrives via Expo push, and
- *    a light pull loop covers the foreground while a chat is open.
+ *  - RelayPullSource (relay set): pulls buffered updates from the relay (the relay's
+ *    user-account session is the sole consumer). Realtime arrives via Expo push, and a
+ *    light pull loop covers the foreground while a chat is open.
+ *  - NullReceiveSource (no relay): live receive needs the relay (MTProto), so without one
+ *    there's nothing to receive — mock buddies reply locally. A no-op.
  *
- * Both feed updates through a ChatBridge (currentOffset / ingestUpdates) — the single
- * dedupe/offset authority. Sending stays direct to the gateway in both modes (it doesn't
- * consume the update queue).
- *
- * The bridge is injected by chat.ts via setChatBridge() rather than imported, so this
- * module does NOT import the chat store — that one-directional dependency (chat →
- * ReceiveSource only) breaks the require cycle.
+ * RelayPullSource feeds updates through a ChatBridge (currentOffset / ingestUpdates) — the
+ * single dedupe/offset authority. The bridge is injected by chat.ts via setChatBridge()
+ * rather than imported, so this module does NOT import the chat store — that one-directional
+ * dependency (chat → ReceiveSource only) breaks the require cycle.
  */
 import type { TgUpdate } from "@/infrastructure/api/telegramBotApi";
 import { config } from "@/infrastructure/config";
-import { botApi } from "@/infrastructure/api/telegramBotApi";
 import { relayClient } from "@/infrastructure/api/relayClient";
-import { secureStore, SecureKeys } from "@/infrastructure/storage/secureStore";
 import { useBuddiesStore } from "@/application/stores/buddies";
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
@@ -48,47 +43,11 @@ export interface ReceiveSource {
 
 type Ctrl = { stopped: boolean; abort?: AbortController };
 
-class TelegramPollSource implements ReceiveSource {
-  private loops = new Map<string, Ctrl>();
-
-  async start(buddyId: string): Promise<void> {
-    if (this.loops.has(buddyId)) return;
-    const token = await secureStore.get(SecureKeys.botToken(buddyId));
-    if (!token) return;
-    const ctrl: Ctrl = { stopped: false };
-    this.loops.set(buddyId, ctrl);
-    let backoff = 1000;
-
-    void (async () => {
-      while (!ctrl.stopped) {
-        try {
-          const abort = new AbortController();
-          ctrl.abort = abort;
-          const offset = chat.currentOffset(buddyId);
-          const updates = await botApi.getUpdates(token, offset, 25, abort.signal);
-          backoff = 1000;
-          if (updates.length) chat.ingestUpdates(buddyId, updates);
-        } catch {
-          if (ctrl.stopped) break;
-          await sleep(backoff);
-          backoff = Math.min(backoff * 2, 8000);
-        }
-      }
-    })();
-  }
-
-  stop(buddyId: string): void {
-    const ctrl = this.loops.get(buddyId);
-    if (ctrl) {
-      ctrl.stopped = true;
-      ctrl.abort?.abort();
-      this.loops.delete(buddyId);
-    }
-  }
-
-  async catchUp(): Promise<void> {
-    // Direct poll already covers the open chat; nothing extra to do.
-  }
+/** No relay configured → no live receive (live messaging requires the relay). No-op. */
+class NullReceiveSource implements ReceiveSource {
+  async start(): Promise<void> {}
+  stop(): void {}
+  async catchUp(): Promise<void> {}
 }
 
 class RelayPullSource implements ReceiveSource {
@@ -136,4 +95,4 @@ class RelayPullSource implements ReceiveSource {
 
 export const receiveSource: ReceiveSource = config.relayBase
   ? new RelayPullSource()
-  : new TelegramPollSource();
+  : new NullReceiveSource();

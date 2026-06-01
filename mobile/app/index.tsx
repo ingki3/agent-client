@@ -19,7 +19,9 @@ export default function Splash() {
     if (status === "ready") void hydrateBuddies();
   }, [status, hydrateBuddies]);
 
-  if (status === "onboarding") return <Redirect href="/userid" />;
+  if (status === "onboarding") return <Redirect href="/phone" />;
+  if (status === "code") return <Redirect href="/code" />;
+  if (status === "2fa") return <Redirect href="/twofa" />;
   if (status === "ready") return <Redirect href="/buddies" />;
 
   return (

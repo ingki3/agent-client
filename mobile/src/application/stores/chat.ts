@@ -3,21 +3,24 @@
  * streaming/polling machinery.
  *
  * Two send paths:
- *  - mock buddy (no token): canned reply re-emitted as a typewriter delta stream
+ *  - mock buddy (no peer): canned reply re-emitted as a typewriter delta stream
  *    (FR-14) with an optional synthetic trace (FR-17~20).
- *  - live buddy (real bot token): `sendMessage` to the learned chat, and incoming
- *    replies arrive via a `getUpdates` long-poll loop.
+ *  - live buddy (resolved peer): the relay sends the message AS THE USER (MTProto) to the
+ *    target bot/peer, and the bot's replies arrive — as the counterpart ("agent") side —
+ *    buffered by the relay and delivered via the relay-pull loop.
  *
- * Telegram nuance: a bot token acts *as the bot*. `getUpdates` returns messages sent
- * TO the bot, so we render them as the counterpart ("agent") side and learn `chatId`
- * from the first one. An Agent Gateway routes app↔agent over the same surface.
+ * Because the relay logs in as the human account (not a bot token), the user is the actual
+ * sender; incoming messages from the peer are rendered as "agent" (see ingestUpdates).
  */
 import { create } from "zustand";
 import type { Message, MessageStatus } from "@/domain/entities";
 import { uid } from "@/lib/id";
-import { botApi, type TgUpdate } from "@/infrastructure/api/telegramBotApi";
+import { type TgUpdate } from "@/infrastructure/api/telegramBotApi";
+import { relayClient } from "@/infrastructure/api/relayClient";
+import { config } from "@/infrastructure/config";
+import * as FileSystem from "expo-file-system";
+import type { PickedAttachment } from "@/infrastructure/attachments";
 import { simulateStream, type StreamEvent, type StreamHandle } from "@/infrastructure/api/traceStream";
-import { secureStore, SecureKeys } from "@/infrastructure/storage/secureStore";
 import { kv, KvKeys } from "@/infrastructure/storage/kv";
 import { seedMessages, cannedReply, syntheticTrace } from "@/mock/seed";
 import { receiveSource, setChatBridge } from "@/infrastructure/receive/ReceiveSource";
@@ -25,15 +28,21 @@ import { useBuddiesStore } from "./buddies";
 import { useTraceStore } from "./trace";
 
 const streamHandles = new Map<string, StreamHandle>();
+// Safety timers that auto-clear a stuck "입력 중" indicator if no reply arrives.
+const awaitTimers = new Map<string, ReturnType<typeof setTimeout>>();
 // Receive cursor per buddy (Telegram update_id / relay pull cursor), seeded from kv.
 const offsets = new Map<string, number>();
 
 type ChatState = {
   byBuddy: Record<string, Message[]>;
   streamingMessageId: Record<string, string | undefined>;
+  /** Whether we're awaiting the agent's reply for a buddy (drives the "입력 중" indicator). */
+  awaiting: Record<string, boolean>;
 
   hydrate: (buddyId: string) => Promise<void>;
-  send: (buddyId: string, text: string) => Promise<void>;
+  send: (buddyId: string, text: string, reply?: { messageId?: number; text: string }) => Promise<void>;
+  /** Send one or more attachments as a single bubble (album) with an optional caption. */
+  sendAttachments: (buddyId: string, picked: PickedAttachment[], caption?: string) => Promise<void>;
   retry: (buddyId: string, messageId: string) => Promise<void>;
   stop: (buddyId: string) => void;
   startPolling: (buddyId: string) => Promise<void>;
@@ -78,6 +87,24 @@ export const useChatStore = create<ChatState>((set, get) => {
 
   const setStatus = (buddyId: string, messageId: string, status: MessageStatus) =>
     patch(buddyId, messageId, { status });
+
+  const setAwaiting = (buddyId: string, on: boolean) => {
+    const existing = awaitTimers.get(buddyId);
+    if (existing) {
+      clearTimeout(existing);
+      awaitTimers.delete(buddyId);
+    }
+    if (on) {
+      awaitTimers.set(
+        buddyId,
+        setTimeout(() => {
+          awaitTimers.delete(buddyId);
+          set((s) => ({ awaiting: { ...s.awaiting, [buddyId]: false } }));
+        }, 120000),
+      );
+    }
+    set((s) => ({ awaiting: { ...s.awaiting, [buddyId]: on } }));
+  };
 
   const touchBuddy = (buddyId: string, preview: string, bumpUnread = false) => {
     const buddiesStore = useBuddiesStore.getState();
@@ -153,19 +180,26 @@ export const useChatStore = create<ChatState>((set, get) => {
     streamHandles.set(buddyId, handle);
   };
 
-  const sendLive = async (buddyId: string, messageId: string, text: string) => {
+  const sendLive = async (buddyId: string, messageId: string, text: string, replyToId?: number) => {
     const buddy = useBuddiesStore.getState().buddies.find((b) => b.id === buddyId);
-    const token = await secureStore.get(SecureKeys.botToken(buddyId));
-    if (!token || buddy?.chatId == null) {
-      // chatId is learned from the first incoming update; until then we can't address it.
+    if (buddy?.botId == null) {
       setStatus(buddyId, messageId, "failed");
       persist(buddyId);
       return;
     }
     try {
-      await botApi.sendChatAction(token, buddy.chatId).catch(() => undefined);
-      await botApi.sendMessage(token, buddy.chatId, text);
-      setStatus(buddyId, messageId, "done");
+      // The relay sends as the logged-in user (MTProto) to the peer (botId == peerId).
+      const tgMsgId = await relayClient.sendAs(buddy.botId, text, messageId, replyToId);
+      // Rewrite the optimistic message's id to the Telegram message id, so the same message
+      // echoed back via the outgoing-sync /pull dedups instead of showing twice.
+      set((s) => ({
+        byBuddy: {
+          ...s.byBuddy,
+          [buddyId]: (s.byBuddy[buddyId] ?? []).map((m) =>
+            m.id === messageId ? { ...m, id: `tg-${tgMsgId}`, status: "done" as const } : m,
+          ),
+        },
+      }));
       touchBuddy(buddyId, text);
     } catch {
       setStatus(buddyId, messageId, "failed");
@@ -176,6 +210,7 @@ export const useChatStore = create<ChatState>((set, get) => {
   return {
     byBuddy: {},
     streamingMessageId: {},
+    awaiting: {},
 
     hydrate: async (buddyId) => {
       if (offsets.get(buddyId) == null) {
@@ -192,35 +227,59 @@ export const useChatStore = create<ChatState>((set, get) => {
 
     ingestUpdates: (buddyId, updates) => {
       let offset = offsets.get(buddyId) ?? 0;
+      let gotIncoming = false;
       const buddy = useBuddiesStore.getState().buddies.find((b) => b.id === buddyId);
       for (const u of updates) {
         if (u.update_id + 1 > offset) offset = u.update_id + 1;
         const m = u.message ?? u.edited_message;
-        if (!m?.text) continue;
+        if (!m?.text && !m?.media) continue;
         if (buddy && buddy.chatId == null) {
           useBuddiesStore.getState().update(buddyId, { chatId: m.chat.id });
           buddy.chatId = m.chat.id;
         }
         const id = `tg-${m.message_id}`;
         if (get().byBuddy[buddyId]?.some((x) => x.id === id)) continue;
+        // `outgoing` = the user sent it (from any client) → render on the user side.
+        const preview = m.preview
+          ? {
+              ...m.preview,
+              // relay sends a relative /media path for the photo; make it absolute.
+              image: m.preview.image ? `${config.relayBase ?? ""}${m.preview.image}` : undefined,
+            }
+          : undefined;
+        const attachments = m.media
+          ? [
+              {
+                kind: m.media.kind as "image" | "video" | "voice" | "audio" | "document",
+                uri: `${config.relayBase ?? ""}${m.media.url}`,
+                name: m.media.name,
+                mime: m.media.mime,
+                size: m.media.size,
+              },
+            ]
+          : undefined;
         append(buddyId, {
           id,
           clientId: id,
           buddyId,
-          role: "agent",
-          text: m.text,
+          role: m.outgoing ? "user" : "agent",
+          text: m.text ?? "",
           createdAt: new Date(m.date * 1000).toISOString(),
           status: "done",
+          preview,
+          attachments,
         });
-        touchBuddy(buddyId, m.text, true);
+        touchBuddy(buddyId, m.text || (m.media ? `📎 ${m.media.name}` : ""), !m.outgoing);
+        if (!m.outgoing) gotIncoming = true;
         persist(buddyId);
       }
+      if (gotIncoming) setAwaiting(buddyId, false); // agent replied → hide "입력 중"
       offsets.set(buddyId, offset);
       void kv.set(KvKeys.offset(buddyId), offset);
       return offset;
     },
 
-    send: async (buddyId, text) => {
+    send: async (buddyId, text, reply) => {
       const trimmed = text.trim();
       if (!trimmed) return;
       const buddy = useBuddiesStore.getState().buddies.find((b) => b.id === buddyId);
@@ -233,15 +292,82 @@ export const useChatStore = create<ChatState>((set, get) => {
         text: trimmed,
         createdAt: new Date().toISOString(),
         status: "sending",
+        replyTo: reply ? { messageId: reply.messageId, text: reply.text } : undefined,
       });
       persist(buddyId);
 
       if (buddy?.live) {
-        await sendLive(buddyId, msgId, trimmed);
+        await sendLive(buddyId, msgId, trimmed, reply?.messageId);
+        setAwaiting(buddyId, true); // show "입력 중" until the agent replies
       } else {
         setStatus(buddyId, msgId, "done");
         streamMockReply(buddyId, trimmed);
       }
+    },
+
+    sendAttachments: async (buddyId, picked, caption) => {
+      if (picked.length === 0) return;
+      const buddy = useBuddiesStore.getState().buddies.find((b) => b.id === buddyId);
+      const msgId = uid("u");
+      const cap = caption?.trim() ?? "";
+      append(buddyId, {
+        id: msgId,
+        clientId: msgId,
+        buddyId,
+        role: "user",
+        text: cap,
+        createdAt: new Date().toISOString(),
+        status: "sending",
+        attachments: picked.map((p) => ({
+          kind: p.kind,
+          uri: p.uri,
+          name: p.name,
+          mime: p.mime,
+          size: p.size,
+          durationMs: p.durationMs,
+        })),
+      });
+      persist(buddyId);
+
+      const labels: Record<string, string> = { image: "🖼 사진", video: "🎬 동영상", voice: "🎙 음성", audio: "🎵 오디오", document: "📎 파일" };
+      if (buddy?.botId == null) {
+        setStatus(buddyId, msgId, "failed");
+        persist(buddyId);
+        return;
+      }
+      try {
+        const read = (uri: string) => FileSystem.readAsStringAsync(uri, { encoding: FileSystem.EncodingType.Base64 });
+        let tgMsgId: number;
+        if (picked.length === 1) {
+          // Single item keeps its type-specific handling (voiceNote, document filename, …).
+          const p = picked[0]!;
+          tgMsgId = await relayClient.sendMedia(buddy.botId, {
+            kind: p.kind,
+            fileName: p.name,
+            mime: p.mime,
+            caption: cap || undefined,
+            dataBase64: await read(p.uri),
+          });
+        } else {
+          // Multiple → one Telegram album (single bubble).
+          const files = await Promise.all(
+            picked.map(async (p) => ({ kind: p.kind, fileName: p.name, mime: p.mime, dataBase64: await read(p.uri) })),
+          );
+          tgMsgId = await relayClient.sendMediaGroup(buddy.botId, files, cap || undefined);
+        }
+        set((s) => ({
+          byBuddy: {
+            ...s.byBuddy,
+            [buddyId]: (s.byBuddy[buddyId] ?? []).map((m) =>
+              m.id === msgId ? { ...m, id: `tg-${tgMsgId}`, status: "done" as const } : m,
+            ),
+          },
+        }));
+        touchBuddy(buddyId, picked.length > 1 ? `📎 첨부 ${picked.length}개` : labels[picked[0]!.kind] ?? "📎 첨부");
+      } catch {
+        setStatus(buddyId, msgId, "failed");
+      }
+      persist(buddyId);
     },
 
     retry: async (buddyId, messageId) => {
@@ -250,7 +376,7 @@ export const useChatStore = create<ChatState>((set, get) => {
       setStatus(buddyId, messageId, "sending");
       const buddy = useBuddiesStore.getState().buddies.find((b) => b.id === buddyId);
       if (buddy?.live) {
-        await sendLive(buddyId, messageId, msg.text);
+        await sendLive(buddyId, messageId, msg.text, msg.replyTo?.messageId);
       } else {
         setStatus(buddyId, messageId, "done");
         streamMockReply(buddyId, msg.text);

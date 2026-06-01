@@ -14,15 +14,32 @@ appId: dev.simplist.agentclient.mockup
 - tapOn:
     id: "chatInput"
 - waitForAnimationToEnd
-- inputText: "이번 분기 매출 표랑 코드 예시까지 정리해줘" # >14자 → 리치 마크다운 응답
+# >14자 → 리치 마크다운 응답. Maestro can't type non-ASCII on Android (adb input is
+# ASCII-only — issue #146); the reply branches on length, not content, so an ASCII string
+# >14 chars triggers the same RICH_REPLY. Korean reply rendering is asserted below regardless.
+- runFlow:
+    when:
+      platform: iOS
+    commands:
+      - inputText: "이번 분기 매출 표랑 코드 예시까지 정리해줘"
+- runFlow:
+    when:
+      platform: Android
+    commands:
+      - inputText: "summarize this quarter revenue table and a code sample"
 - tapOn:
     id: "chatSend"
-# Wait for the rich reply to stream in and render via the GFM renderer:
-# the blockquote content appears with no raw '>' markup (FR-15).
-- extendedWaitUntil:
-    visible:
+# The rich reply streams in; it's taller than the screen and the list doesn't auto-scroll
+# to its end, so scroll the message list down to the GFM blockquote — rendered with no raw
+# '>' markup (FR-15). scrollUntilVisible also absorbs the streaming delay (retries to timeout).
+- scrollUntilVisible:
+    element:
       text: ".*추가로 필요한 게 있으면 알려주세요.*"
+    direction: DOWN
     timeout: 20000
-# Trace summary chip is attached to the agent reply (FR-17).
-- assertVisible:
-    id: "traceToggle"
+# Trace summary chip is attached at the end of the agent reply (FR-17), just below the reply.
+- scrollUntilVisible:
+    element:
+      id: "traceToggle"
+    direction: DOWN
+    timeout: 5000

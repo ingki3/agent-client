@@ -1,6 +1,6 @@
 /**
- * S-12 · 친구 추가 — 봇 토큰 입력 (UC-02, FR-05). `getMe` validates the token and
- * fetches metadata, then routes to the preview step. Invalid token → inline error.
+ * S-12 · 친구 추가 — 상대 @username 입력. The relay resolves the username via the user's
+ * account (MTProto) and returns the peer; then routes to the preview step.
  */
 import { useState } from "react";
 import { View, Text, TextInput, Pressable, KeyboardAvoidingView, Platform } from "react-native";
@@ -10,35 +10,32 @@ import { useTheme } from "@/design/theme";
 import { fontSize, radius, space, touch } from "@/design/tokens";
 import { useBuddiesStore } from "@/application/stores/buddies";
 import { useAddBuddyDraft } from "@/application/stores/addBuddyDraft";
-import { BotApiError } from "@/infrastructure/api/telegramBotApi";
 
-export default function AddBuddyTokenScreen() {
+export default function AddBuddyUsernameScreen() {
   const { color } = useTheme();
   const router = useRouter();
   const preview = useBuddiesStore((s) => s.preview);
   const setDraft = useAddBuddyDraft((s) => s.set);
 
-  const [token, setToken] = useState("");
-  // Default visible: a bot token isn't a password; secureTextEntry triggers the iOS
-  // strong-password keyboard that covers the submit button. Toggle to hide.
-  const [masked, setMasked] = useState(false);
+  const [username, setUsername] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  const canNext = token.trim().length > 0 && !busy;
+  const canNext = username.trim().replace(/^@/, "").length > 0 && !busy;
 
   const handleNext = async () => {
     if (!canNext) return;
     setBusy(true);
     setError(null);
     try {
-      const meta = await preview(token);
-      setDraft(token.trim(), meta);
+      const peer = await preview(username);
+      setDraft(peer);
       router.push("/add-buddy/preview");
     } catch (e) {
-      if (e instanceof BotApiError && e.code === 401) setError("유효하지 않은 토큰입니다.");
-      else if (e instanceof Error && e.message.includes("봇")) setError(e.message);
-      else setError("토큰을 확인할 수 없습니다. 네트워크와 토큰을 확인해 주세요.");
+      const msg = e instanceof Error ? e.message : "";
+      if (msg.includes("not signed in")) setError("로그인이 필요합니다.");
+      else if (msg === "network") setError("네트워크 오류입니다. 릴레이 연결을 확인해 주세요.");
+      else setError("사용자명을 찾을 수 없습니다. @username을 확인해 주세요.");
     } finally {
       setBusy(false);
     }
@@ -56,73 +53,64 @@ export default function AddBuddyTokenScreen() {
           ),
         }}
       />
-      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : "height"}>
-      <View style={{ flex: 1, padding: space[5], gap: space[4] }}>
-        <Text style={{ color: color("text-secondary"), fontSize: fontSize["body-sm"], lineHeight: 20 }}>
-          텔레그램 봇 토큰을 입력하세요. 기본 게이트웨이는 공개 Telegram Bot API이며, 실제 봇과 즉시 대화할 수 있습니다.
-        </Text>
+      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
+        <View style={{ flex: 1, padding: space[5], gap: space[4] }}>
+          <Text style={{ color: color("text-secondary"), fontSize: fontSize["body-sm"], lineHeight: 20 }}>
+            대화할 상대의 텔레그램 @username을 입력하세요. 내 계정으로 메시지를 보내며, 상대(봇)의 답장이 돌아옵니다.
+          </Text>
 
-        <View style={{ gap: space[2] }}>
-          <Text style={{ color: color("text-secondary"), fontSize: fontSize.caption, fontWeight: "600" }}>봇 토큰</Text>
-          <View
+          <View style={{ gap: space[2] }}>
+            <Text style={{ color: color("text-secondary"), fontSize: fontSize.caption, fontWeight: "600" }}>사용자명</Text>
+            <View
+              style={{
+                flexDirection: "row",
+                alignItems: "center",
+                backgroundColor: color("surface-elevated"),
+                borderRadius: radius.lg,
+                paddingHorizontal: space[4],
+                minHeight: touch.min,
+              }}
+            >
+              <Text style={{ color: color("text-secondary"), fontSize: fontSize.body }}>@</Text>
+              <TextInput
+                testID="tokenInput"
+                value={username.replace(/^@/, "")}
+                onChangeText={(t) => {
+                  setUsername(t);
+                  setError(null);
+                }}
+                placeholder="myagent_bot"
+                placeholderTextColor={color("text-secondary")}
+                autoCapitalize="none"
+                autoCorrect={false}
+                autoComplete="off"
+                spellCheck={false}
+                style={{ flex: 1, color: color("text-primary"), fontSize: fontSize.body, paddingVertical: space[3], paddingLeft: space[1] }}
+              />
+            </View>
+          </View>
+
+          {error ? <Text style={{ color: color("error"), fontSize: fontSize["body-sm"] }}>{error}</Text> : null}
+
+          <Pressable
+            testID="tokenNext"
+            onPress={handleNext}
+            disabled={!canNext}
+            accessibilityRole="button"
             style={{
-              flexDirection: "row",
+              backgroundColor: color(canNext ? "primary" : "surface-elevated"),
+              borderRadius: radius.full,
+              paddingVertical: space[3],
               alignItems: "center",
-              backgroundColor: color("surface-elevated"),
-              borderRadius: radius.lg,
-              paddingHorizontal: space[4],
               minHeight: touch.min,
+              justifyContent: "center",
             }}
           >
-            <TextInput
-              testID="tokenInput"
-              value={token}
-              onChangeText={(t) => {
-                setToken(t);
-                setError(null);
-              }}
-              placeholder="123456789:ABC-DEF..."
-              placeholderTextColor={color("text-secondary")}
-              autoCapitalize="none"
-              autoCorrect={false}
-              autoComplete="off"
-              textContentType="none"
-              importantForAutofill="no"
-              spellCheck={false}
-              secureTextEntry={masked}
-              style={{ flex: 1, color: color("text-primary"), fontSize: fontSize.body, paddingVertical: space[3] }}
-            />
-            <Pressable onPress={() => setMasked((m) => !m)} hitSlop={8} style={{ paddingLeft: space[2] }}>
-              <Text style={{ color: color("primary"), fontSize: fontSize["body-sm"] }}>{masked ? "표시" : "숨김"}</Text>
-            </Pressable>
-          </View>
+            <Text style={{ color: color(canNext ? "on-primary" : "text-disabled"), fontSize: fontSize.body, fontWeight: "700" }}>
+              {busy ? "확인 중…" : "다음"}
+            </Text>
+          </Pressable>
         </View>
-
-        {error ? <Text style={{ color: color("error"), fontSize: fontSize["body-sm"] }}>{error}</Text> : null}
-
-        <Text style={{ color: color("text-secondary"), fontSize: fontSize.caption }}>
-          토큰은 @BotFather에서 발급받을 수 있습니다. 토큰은 기기 SecureStore에만 저장됩니다.
-        </Text>
-
-        <Pressable
-          testID="tokenNext"
-          onPress={handleNext}
-          disabled={!canNext}
-          accessibilityRole="button"
-          style={{
-            backgroundColor: color(canNext ? "primary" : "surface-elevated"),
-            borderRadius: radius.full,
-            paddingVertical: space[3],
-            alignItems: "center",
-            minHeight: touch.min,
-            justifyContent: "center",
-          }}
-        >
-          <Text style={{ color: color(canNext ? "on-primary" : "text-disabled"), fontSize: fontSize.body, fontWeight: "700" }}>
-            {busy ? "확인 중…" : "다음"}
-          </Text>
-        </Pressable>
-      </View>
       </KeyboardAvoidingView>
     </SafeAreaView>
   );
