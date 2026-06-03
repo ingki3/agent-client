@@ -6,12 +6,15 @@
  *   GET  /health     — loop/offset snapshot
  */
 import Fastify from "fastify";
+import { createReadStream } from "node:fs";
+import { stat } from "node:fs/promises";
 import { config } from "./config.js";
 import { store } from "./store.js";
 import { newSecret, hashSecret, secretMatches } from "./crypto.js";
 import { reconcileLoops, loopCount } from "./poller.js";
 import { mtproto } from "./mtproto.js";
 import { log } from "./log.js";
+import { createTtsAudio, createTtsScript, resolveTtsFile } from "./tts.js";
 import type {
   RegisterBody,
   AuthStartBody,
@@ -19,11 +22,82 @@ import type {
   Auth2faBody,
   PeerResolveBody,
   SendBody,
+  FormSubmitBody,
+  HelperSubmitBody,
+  TtsBody,
+  TtsMode,
+  InlineKeyboardCallbackBody,
 } from "./types.js";
 
 // Raise the body limit so base64-encoded attachments (image/video/voice/docs) fit. ~60 MB
 // of JSON ≈ a ~44 MB file.
 const app = Fastify({ logger: false, bodyLimit: 60 * 1024 * 1024 });
+
+function firstMatch(input: string, re: RegExp): string | undefined {
+  const m = input.match(re);
+  return m?.[1]?.trim();
+}
+
+function decodeHtml(input?: string): string | undefined {
+  if (!input) return undefined;
+  return input
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, "\"")
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function absoluteUrl(maybeUrl: string | undefined, base: string): string | undefined {
+  if (!maybeUrl) return undefined;
+  try {
+    return new URL(maybeUrl, base).toString();
+  } catch {
+    return undefined;
+  }
+}
+
+async function fetchLinkPreview(url: string): Promise<{ url: string; title?: string; description?: string; siteName?: string; image?: string }> {
+  const target = new URL(url);
+  if (!["http:", "https:"].includes(target.protocol)) throw new Error("unsupported_url");
+
+  if (/(^|\.)youtu\.be$|(^|\.)youtube\.com$/.test(target.hostname)) {
+    const oembed = new URL("https://www.youtube.com/oembed");
+    oembed.searchParams.set("url", target.toString());
+    oembed.searchParams.set("format", "json");
+    const res = await fetch(oembed, { signal: AbortSignal.timeout(7000) });
+    if (res.ok) {
+      const body = (await res.json()) as { title?: string; provider_name?: string; thumbnail_url?: string };
+      return {
+        url: target.toString(),
+        title: body.title,
+        siteName: body.provider_name ?? "YouTube",
+        image: body.thumbnail_url,
+      };
+    }
+  }
+
+  const res = await fetch(target, {
+    headers: { "User-Agent": "AgentClientLinkPreview/1.0" },
+    signal: AbortSignal.timeout(8000),
+  });
+  if (!res.ok) throw new Error(`fetch_failed_${res.status}`);
+  const html = (await res.text()).slice(0, 400000);
+  const attr = (name: string) =>
+    firstMatch(html, new RegExp(`<meta[^>]+(?:property|name)=["']${name}["'][^>]+content=["']([^"']+)["'][^>]*>`, "i"))
+    ?? firstMatch(html, new RegExp(`<meta[^>]+content=["']([^"']+)["'][^>]+(?:property|name)=["']${name}["'][^>]*>`, "i"));
+  const title = decodeHtml(attr("og:title") ?? attr("twitter:title") ?? firstMatch(html, /<title[^>]*>([\s\S]*?)<\/title>/i));
+  const description = decodeHtml(attr("og:description") ?? attr("description") ?? attr("twitter:description"));
+  const siteName = decodeHtml(attr("og:site_name") ?? target.hostname.replace(/^www\./, ""));
+  const image = absoluteUrl(decodeHtml(attr("og:image") ?? attr("twitter:image")), target.toString());
+  return { url: target.toString(), title, description, siteName, image };
+}
+
+function normalizeTtsMode(mode: unknown): TtsMode {
+  return mode === "brief" || mode === "action_items" || mode === "explain" ? mode : "brief";
+}
 
 function authDevice(req: { headers: Record<string, unknown> }, deviceId: string): boolean {
   const dev = store.getDevice(deviceId);
@@ -31,6 +105,70 @@ function authDevice(req: { headers: Record<string, unknown> }, deviceId: string)
   const header = String(req.headers["authorization"] ?? "");
   const secret = header.startsWith("Bearer ") ? header.slice(7) : "";
   return secretMatches(secret, dev.device_secret_hash);
+}
+
+function trimText(value: unknown, max: number): unknown {
+  if (typeof value !== "string") return value;
+  return value.length > max ? `${value.slice(0, Math.max(0, max - 1))}…` : value;
+}
+
+function compactHelperSource(source: NonNullable<HelperSubmitBody["source"]>, mode: "normal" | "small" = "normal") {
+  const textMax = mode === "small" ? 450 : 900;
+  const recentTextMax = mode === "small" ? 120 : 260;
+  return {
+    messageId: source.messageId,
+    text: trimText(source.text, textMax),
+    excerpt: trimText(source.excerpt, 240),
+    urls: source.urls?.slice(0, 3),
+    handles: source.handles?.slice(0, 4),
+    preview: source.preview
+      ? {
+          url: source.preview.url,
+          title: trimText(source.preview.title, 160),
+          description: trimText(source.preview.description, mode === "small" ? 120 : 240),
+          siteName: source.preview.siteName,
+        }
+      : undefined,
+    attachments: source.attachments?.slice(0, 3),
+    recentMessages: source.recentMessages?.slice(mode === "small" ? -3 : -5).map((m) => ({
+      messageId: m.messageId,
+      role: m.role,
+      text: trimText(m.text, recentTextMax),
+      excerpt: trimText(m.excerpt, 160),
+      urls: m.urls?.slice(0, 2),
+      preview: m.preview ? { url: m.preview.url, title: trimText(m.preview.title, 120), siteName: m.preview.siteName } : undefined,
+    })),
+  };
+}
+
+function helperSubmitText(body: HelperSubmitBody): string {
+  const make = (source: unknown) => [
+    "사용자가 아래 후속 액션을 선택했습니다.",
+    "이 액션은 source 메시지의 대상/문맥에만 적용하세요.",
+    "source.recentMessages가 있으면 전체 대화 맥락 복원에 참고하세요.",
+    "",
+    "```agent_helper_response",
+    JSON.stringify(
+      {
+        helperItemId: body.helperItemId,
+        helperType: body.helperType,
+        action: body.action,
+        label: body.label,
+        value: body.value,
+        values: body.values ?? {},
+        source,
+      },
+      null,
+      2,
+    ),
+    "```",
+  ].join("\n");
+
+  const normal = make(compactHelperSource(body.source ?? {}, "normal"));
+  if (normal.length <= 3800) return normal;
+  const small = make(compactHelperSource(body.source ?? {}, "small"));
+  if (small.length <= 3800) return small;
+  return make({ messageId: body.source?.messageId, urls: body.source?.urls?.slice(0, 2), excerpt: trimText(body.source?.excerpt ?? body.source?.text, 180) }).slice(0, 3800);
 }
 
 app.post("/register", async (req, reply) => {
@@ -86,6 +224,73 @@ app.post("/unregister", async (req, reply) => {
   reconcileLoops(); // reaps now-orphaned bots + deletes their encrypted tokens
   log.info(`unregister device=${body.deviceId} bot=${body.botId ?? "ALL"}`);
   return reply.send({ ok: true });
+});
+
+app.post("/link/preview", async (req, reply) => {
+  const body = req.body as { deviceId?: string; url?: string };
+  if (!body?.deviceId || !body?.url) return reply.code(400).send({ ok: false, error: "bad request" });
+  if (!authDevice(req, body.deviceId)) return reply.code(401).send({ ok: false, error: "unauthorized" });
+  try {
+    const preview = await fetchLinkPreview(body.url);
+    return reply.send({ ok: true, preview });
+  } catch (e) {
+    log.warn(`link preview failed url=${body.url} error=${(e as { message?: string })?.message ?? String(e)}`);
+    return reply.send({ ok: false, error: "preview_failed" });
+  }
+});
+
+app.post("/tts/script", async (req, reply) => {
+  const body = req.body as TtsBody;
+  if (!body?.deviceId || !body?.text) return reply.code(400).send({ ok: false, error: "bad request" });
+  if (!authDevice(req, body.deviceId)) return reply.code(401).send({ ok: false, error: "unauthorized" });
+  try {
+    const mode = normalizeTtsMode(body.mode);
+    const script = await createTtsScript({ text: body.text, mode });
+    log.info(`tts script device=${body.deviceId} message=${body.messageId ?? "none"} mode=${mode} chars=${script.length}`);
+    return reply.send({ ok: true, script, mode });
+  } catch (e) {
+    log.warn(`tts script failed device=${body.deviceId} message=${body.messageId ?? "none"} error=${(e as { message?: string })?.message ?? String(e)}`);
+    return reply.send({ ok: false, error: "tts_failed" });
+  }
+});
+
+app.post("/tts/audio", async (req, reply) => {
+  const body = req.body as TtsBody;
+  if (!body?.deviceId || !body?.text) return reply.code(400).send({ ok: false, error: "bad request" });
+  if (!authDevice(req, body.deviceId)) return reply.code(401).send({ ok: false, error: "unauthorized" });
+  try {
+    const mode = normalizeTtsMode(body.mode);
+    const audio = await createTtsAudio({ text: body.text, mode, voice: body.voice });
+    log.info(
+      `tts audio device=${body.deviceId} message=${body.messageId ?? "none"} mode=${mode} cache=${audio.cacheKey} generated=${audio.generated} script_chars=${audio.script.length}`,
+    );
+    return reply.send({
+      ok: true,
+      audioUrl: `/tts/audio/${audio.cacheKey}`,
+      script: audio.script,
+      mode,
+      cacheKey: audio.cacheKey,
+      generated: audio.generated,
+    });
+  } catch (e) {
+    log.warn(`tts audio failed device=${body.deviceId} message=${body.messageId ?? "none"} error=${(e as { message?: string })?.message ?? String(e)}`);
+    return reply.send({ ok: false, error: "tts_failed" });
+  }
+});
+
+app.get("/tts/audio/:cacheKey", async (req, reply) => {
+  const params = req.params as { cacheKey?: string };
+  const filePath = params.cacheKey ? resolveTtsFile(params.cacheKey) : null;
+  if (!filePath) return reply.code(400).send({ ok: false, error: "bad request" });
+  try {
+    await stat(filePath);
+    return reply
+      .header("Content-Type", "audio/mpeg")
+      .header("Cache-Control", "public, max-age=604800")
+      .send(createReadStream(filePath));
+  } catch {
+    return reply.code(404).send({ ok: false, error: "not_found" });
+  }
 });
 
 app.get("/pull", async (req, reply) => {
@@ -207,6 +412,72 @@ app.post("/send", async (req, reply) => {
     const messageId = await mtproto.sendAs(body.deviceId, body.peerId, body.text, body.replyTo);
     return reply.send({ ok: true, messageId });
   } catch (e) {
+    return mtprotoErr(reply, e);
+  }
+});
+
+app.post("/form/submit", async (req, reply) => {
+  const body = req.body as FormSubmitBody;
+  if (!body?.deviceId || !body?.peerId || !body?.formId || !body?.status || !body?.values) {
+    return reply.code(400).send({ ok: false, error: "bad request" });
+  }
+  if (!authDevice(req, body.deviceId)) return reply.code(401).send({ ok: false, error: "unauthorized" });
+  const text = [
+    "```agent_form_response",
+    JSON.stringify(
+      { formId: body.formId, taskId: body.taskId, status: body.status, values: body.values },
+      null,
+      2,
+    ),
+    "```",
+  ].join("\n");
+  try {
+    const messageId = await mtproto.sendAs(body.deviceId, body.peerId, text);
+    return reply.send({ ok: true, messageId });
+  } catch (e) {
+    return mtprotoErr(reply, e);
+  }
+});
+
+app.post("/helper/submit", async (req, reply) => {
+  const body = req.body as HelperSubmitBody;
+  if (!body?.deviceId || !body?.peerId || !body?.helperItemId || !body?.helperType || !body?.action) {
+    return reply.code(400).send({ ok: false, error: "bad request" });
+  }
+  if (!authDevice(req, body.deviceId)) return reply.code(401).send({ ok: false, error: "unauthorized" });
+  const source = body.source ?? {};
+  log.info(
+    `helper submit received device=${body.deviceId} peer=${body.peerId} helper=${body.helperItemId} type=${body.helperType} action=${body.action} source_msg=${source.messageId ?? "none"} source_text_len=${source.text?.length ?? 0} source_urls=${source.urls?.length ?? 0} recent=${source.recentMessages?.length ?? 0}`,
+  );
+  const text = helperSubmitText(body);
+  try {
+    const messageId = await mtproto.sendAs(body.deviceId, body.peerId, text);
+    log.info(
+      `helper submit sent device=${body.deviceId} peer=${body.peerId} tg_message_id=${messageId} helper=${body.helperItemId} action=${body.action} source_msg=${source.messageId ?? "none"}`,
+    );
+    return reply.send({ ok: true, messageId });
+  } catch (e) {
+    log.warn(
+      `helper submit failed device=${body.deviceId} peer=${body.peerId} helper=${body.helperItemId} action=${body.action} source_msg=${source.messageId ?? "none"} error=${(e as { message?: string })?.message ?? String(e)}`,
+    );
+    return mtprotoErr(reply, e);
+  }
+});
+
+app.post("/inline-keyboard/callback", async (req, reply) => {
+  const body = req.body as InlineKeyboardCallbackBody;
+  if (!body?.deviceId || !body?.peerId || !body?.messageId || !body?.buttonId) {
+    return reply.code(400).send({ ok: false, error: "bad request" });
+  }
+  if (!authDevice(req, body.deviceId)) return reply.code(401).send({ ok: false, error: "unauthorized" });
+  try {
+    const result = await mtproto.clickInlineButton(body.deviceId, body.peerId, body.messageId, body.buttonId);
+    log.info(`inline keyboard callback device=${body.deviceId} peer=${body.peerId} msg=${body.messageId} button=${body.buttonId}`);
+    return reply.send({ ok: true, result });
+  } catch (e) {
+    log.warn(
+      `inline keyboard callback failed device=${body.deviceId} peer=${body.peerId} msg=${body.messageId} button=${body.buttonId} error=${(e as { message?: string })?.message ?? String(e)}`,
+    );
     return mtprotoErr(reply, e);
   }
 });

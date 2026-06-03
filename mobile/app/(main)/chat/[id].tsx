@@ -12,6 +12,9 @@ import * as Clipboard from "expo-clipboard";
 import { useBuddiesStore } from "@/application/stores/buddies";
 import { useChatStore } from "@/application/stores/chat";
 import { useAuthStore } from "@/application/stores/auth";
+import { useTasksStore } from "@/application/stores/tasks";
+import { useArtifactsStore } from "@/application/stores/artifacts";
+import { useFormsStore } from "@/application/stores/forms";
 import { ChatBubble } from "@/components/ChatBubble";
 import { ChatInputBar } from "@/components/ChatInputBar";
 import { Avatar } from "@/components/Avatar";
@@ -35,6 +38,9 @@ export default function ChatScreen() {
   const messages = useChatStore((s) => (id ? s.byBuddy[id] ?? [] : []));
   const streamingId = useChatStore((s) => (id ? s.streamingMessageId[id] : undefined));
   const hydrate = useChatStore((s) => s.hydrate);
+  const hydrateTasks = useTasksStore((s) => s.hydrate);
+  const hydrateArtifacts = useArtifactsStore((s) => s.hydrate);
+  const hydrateForms = useFormsStore((s) => s.hydrate);
   const send = useChatStore((s) => s.send);
   const sendAttachments = useChatStore((s) => s.sendAttachments);
   const stop = useChatStore((s) => s.stop);
@@ -43,6 +49,7 @@ export default function ChatScreen() {
   const stopPolling = useChatStore((s) => s.stopPolling);
   const catchUp = useChatStore((s) => s.catchUp);
   const awaiting = useChatStore((s) => (id ? !!s.awaiting[id] : false));
+  const tasks = useTasksStore((s) => (id ? s.byBuddy[id] ?? [] : []));
   const sessionConnected = useAuthStore((s) => s.connected);
   const refreshStatus = useAuthStore((s) => s.refreshStatus);
 
@@ -81,6 +88,9 @@ export default function ChatScreen() {
     // Capture the last-read message id (for the restore-scroll) before clearing the badge.
     savedLastReadId.current = useBuddiesStore.getState().buddies.find((b) => b.id === id)?.lastReadId;
     void hydrate(id);
+    void hydrateTasks(id);
+    void hydrateArtifacts(id);
+    void hydrateForms(id);
     void startPolling(id);
     markRead(id);
     return () => {
@@ -88,7 +98,7 @@ export default function ChatScreen() {
       // Persist the bottom-most message the user actually saw, so the next open resumes there.
       if (lastVisibleId.current) updateBuddy(id, { lastReadId: lastVisibleId.current });
     };
-  }, [id, hydrate, startPolling, stopPolling, markRead, updateBuddy]);
+  }, [id, hydrate, hydrateTasks, hydrateArtifacts, hydrateForms, startPolling, stopPolling, markRead, updateBuddy]);
 
   // Keep the relay-session "connected" indicator fresh while the chat is open.
   useEffect(() => {
@@ -151,6 +161,9 @@ export default function ChatScreen() {
   }
 
   const connected = buddy.live ? sessionConnected : buddy.connected;
+  const activeTask = [...tasks]
+    .reverse()
+    .find((t) => t.status !== "completed" && t.status !== "archived");
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: color("surface") }} edges={["bottom"]}>
@@ -190,6 +203,24 @@ export default function ChatScreen() {
         behavior={Platform.OS === "ios" ? "padding" : undefined}
         keyboardVerticalOffset={Platform.OS === "ios" ? 88 : 0}
       >
+        {activeTask ? (
+          <View
+            style={{
+              paddingHorizontal: space[4],
+              paddingVertical: space[2],
+              borderBottomWidth: 1,
+              borderBottomColor: color("border"),
+              backgroundColor: color("surface-elevated"),
+            }}
+          >
+            <Text style={{ color: color("text-primary"), fontSize: fontSize["body-sm"], fontWeight: "700" }} numberOfLines={1}>
+              작업 · {activeTask.title}
+            </Text>
+            <Text style={{ color: color("text-secondary"), fontSize: fontSize.caption }} numberOfLines={1}>
+              {activeTask.status === "needs_input" ? "입력이 필요합니다" : activeTask.status === "review_needed" ? "검토가 필요합니다" : "진행 중"}
+            </Text>
+          </View>
+        ) : null}
         <FlatList
           ref={listRef}
           data={data}

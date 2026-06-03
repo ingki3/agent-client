@@ -116,7 +116,7 @@ export function parseMarkdown(src: string, streaming = false): Block[] {
       para.push(lines[i]!.trim());
       i += 1;
     }
-    blocks.push({ type: "paragraph", inline: parseInline(para.join(" "), streaming) });
+    blocks.push({ type: "paragraph", inline: parseInline(para.join("\n"), streaming) });
   }
 
   return blocks;

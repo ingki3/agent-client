@@ -6,12 +6,18 @@ import { useAuthStore } from "@/application/stores/auth";
 import { useBuddiesStore } from "@/application/stores/buddies";
 import { useChatStore } from "@/application/stores/chat";
 import { useTraceStore } from "@/application/stores/trace";
+import { useTasksStore } from "@/application/stores/tasks";
+import { useArtifactsStore } from "@/application/stores/artifacts";
+import { useFormsStore } from "@/application/stores/forms";
 import { kv } from "@/infrastructure/storage/kv";
 
 export async function signOut(): Promise<void> {
   await useBuddiesStore.getState().reset(); // removes bot tokens + per-buddy message kv
   await kv.clear();
   useTraceStore.getState().clear();
+  useTasksStore.getState().clear();
+  useArtifactsStore.getState().clear();
+  useFormsStore.getState().clear();
   useChatStore.setState({ byBuddy: {}, streamingMessageId: {} });
   await useAuthStore.getState().reset(); // clears user id + flips to onboarding
 }

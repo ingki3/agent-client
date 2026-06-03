@@ -54,6 +54,16 @@ export type MessageStatus =
 
 export type TraceSummary = { thinkingSteps: number; toolCalls: number; elapsedMs: number };
 
+export type TtsMode = "brief" | "explain" | "action_items";
+
+export type MessageTts = {
+  status: "idle" | "generating" | "ready" | "playing" | "failed";
+  mode?: TtsMode;
+  audioUrl?: string;
+  script?: string;
+  error?: string;
+};
+
 /** Link (webpage) preview attached to a message — title/description/image for a URL. */
 export type LinkPreview = {
   url: string;
@@ -62,6 +72,20 @@ export type LinkPreview = {
   siteName?: string;
   /** Fully-qualified image URL (relayBase already prepended) or undefined. */
   image?: string;
+};
+
+export type InlineKeyboardButton = {
+  id: string;
+  label: string;
+  type: "callback" | "url" | "web_app" | "login_url" | "switch_inline" | "copy" | "unsupported";
+  url?: string;
+  copyText?: string;
+  style?: "primary" | "success" | "danger" | "default";
+  disabled?: boolean;
+};
+
+export type InlineKeyboard = {
+  rows: InlineKeyboardButton[][];
 };
 
 export type AttachmentKind = "image" | "video" | "voice" | "audio" | "document";
@@ -92,6 +116,12 @@ export type Message = {
   attachments?: Attachment[];
   /** Quoted message this one replies to (snippet shown above the bubble; links via Telegram reply). */
   replyTo?: { messageId?: number; text: string };
+  taskId?: string;
+  artifactIds?: string[];
+  formId?: string;
+  helperItems?: HelperItem[];
+  tts?: MessageTts;
+  inlineKeyboard?: InlineKeyboard;
 };
 
 export type TraceNodeKind = "thinking" | "tool_call" | "tool_result";
@@ -109,6 +139,98 @@ export type Trace = {
   messageId: string;
   nodes: TraceNode[];
 };
+
+export type TaskStatus =
+  | "requested"
+  | "running"
+  | "needs_input"
+  | "review_needed"
+  | "completed"
+  | "blocked"
+  | "archived";
+
+export type AgentTask = {
+  id: string;
+  buddyId: string;
+  title: string;
+  status: TaskStatus;
+  createdAt: string;
+  updatedAt: string;
+  sourceMessageId?: string;
+  artifactIds: string[];
+};
+
+export type ArtifactKind = "markdown" | "code" | "table" | "json" | "file" | "checklist";
+
+export type AgentArtifact = {
+  id: string;
+  buddyId: string;
+  taskId?: string;
+  sourceMessageId?: string;
+  title: string;
+  kind: ArtifactKind;
+  content: string;
+  language?: string;
+  createdAt: string;
+};
+
+export type FormFieldKind = "single_select" | "multi_select" | "text" | "number" | "date" | "file" | "confirm";
+
+export type FormFieldOption = {
+  label: string;
+  value: string;
+};
+
+export type FormField = {
+  id: string;
+  kind: FormFieldKind;
+  label: string;
+  required?: boolean;
+  placeholder?: string;
+  options?: FormFieldOption[];
+};
+
+export type FormValue = string | number | boolean | string[] | null;
+
+export type FormCardStatus = "pending" | "submitted" | "cancelled";
+
+export type AgentForm = {
+  id: string;
+  buddyId: string;
+  taskId?: string;
+  sourceMessageId?: string;
+  title: string;
+  description?: string;
+  fields: FormField[];
+  submitLabel: string;
+  cancelLabel?: string;
+  status: FormCardStatus;
+  values?: Record<string, FormValue>;
+  createdAt: string;
+  submittedAt?: string;
+};
+
+export type AgentPayload =
+  | { type: "task_update"; task: Partial<AgentTask> & Pick<AgentTask, "id" | "title" | "status"> }
+  | { type: "artifact"; artifact: Omit<AgentArtifact, "buddyId" | "sourceMessageId" | "createdAt"> & Partial<Pick<AgentArtifact, "createdAt">> }
+  | { type: "form"; form: Omit<AgentForm, "buddyId" | "sourceMessageId" | "createdAt" | "status"> & Partial<Pick<AgentForm, "createdAt" | "status">> };
+
+export type HelperOption = { label: string; value: string };
+export type HelperField = {
+  id: string;
+  kind: "text" | "textarea" | "number" | "date" | "single_select" | "multi_select" | "confirm";
+  label: string;
+  required?: boolean;
+  placeholder?: string;
+  options?: HelperOption[];
+};
+export type HelperItem =
+  | { type: "quick_replies"; id: string; title?: string; options: HelperOption[] }
+  | { type: "single_select"; id: string; title: string; description?: string; options: HelperOption[]; submitLabel: string }
+  | { type: "multi_select"; id: string; title: string; description?: string; options: HelperOption[]; submitLabel: string }
+  | { type: "input_form"; id: string; title: string; description?: string; fields: HelperField[]; submitLabel: string; cancelLabel?: string }
+  | { type: "confirm_action"; id: string; title: string; description?: string; summary?: string[]; confirmLabel: string; reviseLabel?: string; cancelLabel?: string }
+  | { type: "artifact_suggestion"; id: string; title: string; artifact: { kind: ArtifactKind; title: string; content: string; language?: string } };
 
 /** Allowed message status transitions (TECH_SPEC §2 "status transitions"). */
 const TRANSITIONS: Record<MessageStatus, MessageStatus[]> = {

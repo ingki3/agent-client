@@ -7,6 +7,7 @@
  * at an Agent Gateway to add trace/delta extensions on top of the same protocol.
  */
 import { config } from "../config";
+import type { AgentPayload, HelperItem, InlineKeyboard } from "@/domain/entities";
 
 export type TgUser = {
   id: number;
@@ -28,6 +29,10 @@ export type TgMessage = {
   preview?: { url: string; title?: string; description?: string; siteName?: string; image?: string };
   /** Attached media; `url` is a relay path (prepend config.relayBase) that proxies the bytes. */
   media?: { kind: string; name: string; mime: string; size?: number; url: string };
+  agent_payload?: AgentPayload;
+  agent_payloads?: AgentPayload[];
+  helper_items?: HelperItem[];
+  inline_keyboard?: InlineKeyboard | null;
 };
 
 export type TgUpdate = {

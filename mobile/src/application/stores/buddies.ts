@@ -116,6 +116,9 @@ export const useBuddiesStore = create<BuddiesState>((set, get) => ({
     if (pushEnabled && buddy?.botId != null) await relayClient.unregister(buddy.botId);
     await kv.remove(KvKeys.messages(id));
     await kv.remove(KvKeys.offset(id));
+    await kv.remove(KvKeys.tasks(id));
+    await kv.remove(KvKeys.artifacts(id));
+    await kv.remove(KvKeys.forms(id));
     const buddies = get().buddies.filter((b) => b.id !== id);
     set({ buddies });
     await persist(buddies);

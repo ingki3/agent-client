@@ -12,15 +12,18 @@
  * connected-but-unsigned client is held in memory between steps.
  */
 import { TelegramClient, Api } from "telegram";
+import bigInt from "big-integer";
 import { StringSession } from "telegram/sessions/index.js";
 import { NewMessage } from "telegram/events/index.js";
+import { EditedMessage } from "telegram/events/EditedMessage.js";
 import { computeCheck } from "telegram/Password.js";
 import { CustomFile } from "telegram/client/uploads.js";
 import { config } from "./config.js";
 import { store } from "./store.js";
 import { sendPushes } from "./push.js";
 import { log } from "./log.js";
-import type { TgUpdate, LinkPreview } from "./types.js";
+import { suggestHelperItems } from "./helper.js";
+import type { TgUpdate, LinkPreview, AgentPayload, InlineKeyboard, InlineKeyboardButton } from "./types.js";
 
 /** big-integer Integer or native value → JS number (Telegram ids fit in 2^53 for users). */
 function idToNum(x: unknown): number {
@@ -34,6 +37,9 @@ type Pending = { client: TelegramClient; phoneCodeHash: string; phone: string };
 
 const clients = new Map<string, TelegramClient>(); // signed-in, live (deviceId → client)
 const pending = new Map<string, Pending>(); // mid-login (deviceId → connected client)
+const helperTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const helperLatestText = new Map<string, string>();
+const editUpdateSeq = new Map<string, number>();
 
 function newClient(session = ""): TelegramClient {
   const client = new TelegramClient(new StringSession(session), config.apiId, config.apiHash, {
@@ -51,6 +57,34 @@ function newClient(session = ""): TelegramClient {
 function rpcError(e: unknown): string {
   const anyE = e as { errorMessage?: string; message?: string };
   return anyE?.errorMessage ?? anyE?.message ?? String(e);
+}
+
+function inputPeerFromStored(peer?: { peer_id: number; access_hash: string | null }): InstanceType<typeof Api.InputPeerUser> | undefined {
+  if (!peer?.access_hash) return undefined;
+  return new Api.InputPeerUser({
+    userId: bigInt(peer.peer_id),
+    accessHash: bigInt(peer.access_hash),
+  });
+}
+
+async function retrySendTarget<T>(
+  peer: { device_id: string; peer_id: number; username: string | null; access_hash: string | null } | undefined,
+  send: (target: any) => Promise<T>,
+  refreshPeer: (username: string) => Promise<void>,
+): Promise<T> {
+  const byStoredInput = inputPeerFromStored(peer);
+  if (byStoredInput) {
+    try {
+      return await send(byStoredInput);
+    } catch {
+      // The stored access hash may be stale; fall through to username refresh when possible.
+    }
+  }
+  if (peer?.username) {
+    await refreshPeer(peer.username);
+    return send(peer.username);
+  }
+  throw new Error("cannot resolve telegram peer");
 }
 
 /**
@@ -96,7 +130,186 @@ function entitiesToMarkdown(text: string, entities?: MdEntity[]): string {
   return out;
 }
 
+type ExtractedAgentPayloads = { text: string; payloads: AgentPayload[] };
+
+function cleanAgentVisibleText(text: string): string {
+  let cleaned = text.replace(/\r\n?/g, "\n").trim();
+
+  // Some agents expose skill/tool progress in the user-visible Telegram message, e.g.
+  // "진행 상황 ... skilldocs 시작 ... summarize 완료 – Transcript: ...".
+  // Keep the useful result and remove the operational prefix from the chat bubble.
+  const transcriptIdx = cleaned.lastIndexOf("Transcript:");
+  if (transcriptIdx >= 0) cleaned = cleaned.slice(transcriptIdx + "Transcript:".length).trim();
+
+  cleaned = cleaned
+    .replace(/(?:^|\n)\s*진행 상황[^\n]*(?=\n|$)/gi, "\n")
+    .replace(/(?:^|\n)\s*(?:🛠|💻)?\s*skilldocs\s+(?:시작|완료)\s*[–-]\s*(?:\{[^\n]*\}|[^\n]*)/gi, "\n")
+    .replace(/(?:^|\n)\s*(?:🛠|💻)?\s*summarize\s+(?:시작|완료)\s*[–-]\s*(?:\{[^\n]*\}|[^\n]*)/gi, "\n")
+    .replace(/\s*>>\s*/g, "\n\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+
+  if (/^확인 중 오류가 발생해 답변을 마무리하지 못했습니다!?\s*$/i.test(cleaned)) return "";
+  return cleaned;
+}
+
+function inferPayload(raw: Record<string, unknown>): AgentPayload | undefined {
+  if (typeof raw.id !== "string" || typeof raw.title !== "string") return undefined;
+  if (typeof raw.status === "string") return { type: "task_update", task: raw };
+  if (typeof raw.kind === "string" && typeof raw.content === "string") return { type: "artifact", artifact: raw };
+  if (Array.isArray(raw.fields) && typeof raw.submitLabel === "string") return { type: "form", form: raw };
+  return undefined;
+}
+
+function payloadFromBlock(kind: string, json: string): AgentPayload | undefined {
+  try {
+    const raw = JSON.parse(json) as Record<string, unknown>;
+    if (kind === "agent_task") return { type: "task_update", task: raw };
+    if (kind === "agent_artifact") return { type: "artifact", artifact: raw };
+    if (kind === "agent_form") return { type: "form", form: raw };
+    if (raw.type === "task_update" && raw.task && typeof raw.task === "object") {
+      return { type: "task_update", task: raw.task as Record<string, unknown> };
+    }
+    if (raw.type === "artifact" && raw.artifact && typeof raw.artifact === "object") {
+      return { type: "artifact", artifact: raw.artifact as Record<string, unknown> };
+    }
+    if (raw.type === "form" && raw.form && typeof raw.form === "object") {
+      return { type: "form", form: raw.form as Record<string, unknown> };
+    }
+    if (kind === "json" || kind === "") return inferPayload(raw);
+  } catch {
+    return undefined;
+  }
+  return undefined;
+}
+
+function extractAgentPayloads(text: string): ExtractedAgentPayloads {
+  const payloads: AgentPayload[] = [];
+  const cleaned = text.replace(
+    /```([A-Za-z0-9_-]*)\s*\n([\s\S]*?)\n```/g,
+    (_full, kind: string, json: string) => {
+      const payload = payloadFromBlock(kind, json);
+      if (payload) payloads.push(payload);
+      return payload ? "" : _full;
+    },
+  ).replace(/\n{3,}/g, "\n\n").trim();
+  return { text: cleaned, payloads };
+}
+
 type MediaDescriptor = { kind: string; name: string; mime: string; size?: number };
+
+function helperEligibleText(text: string): boolean {
+  const trimmed = text.trim();
+  if (trimmed.length < 20) return false;
+  if (/^[.…·\-\s]+$/.test(trimmed)) return false;
+  if (/^📚\s*skill_view:/i.test(trimmed)) return false;
+  if (/^(?:진행 상황|🛠|💻|Transcript:)/i.test(trimmed)) return false;
+  if (!looksCompleteForHelper(trimmed)) return false;
+  return true;
+}
+
+function looksCompleteForHelper(text: string): boolean {
+  const trimmed = text.trim();
+  const lastLine = (trimmed.split("\n").filter((line) => line.trim()).pop() ?? trimmed).trim();
+  if (/[.!?。！？…]$/.test(lastLine)) return true;
+  if (/[)\]}"'”’]$/.test(lastLine) && /[.!?。！？…][)\]}"'”’]*$/.test(lastLine)) return true;
+  if (/(?:습니다|합니다|입니다|됩니다|해주세요|주세요|해요|이에요|예요|네요|군요|죠|까요|됩니다|완료했습니다|정리했습니다)$/.test(lastLine)) return true;
+  if (/^(```|---|\*\s+\S|-\s+\S|\d+[.)]\s+\S)/m.test(trimmed) && trimmed.length > 600) return true;
+  if (trimmed.length >= 1200 && /(?:다|요|죠|함|됨|음)$/.test(lastLine)) return true;
+  return false;
+}
+
+function nextEditUpdateId(deviceId: string, peerId: number, messageId: number): number {
+  const key = `${deviceId}:${peerId}:${messageId}`;
+  const next = Math.min((editUpdateSeq.get(key) ?? 1) + 1, 998);
+  editUpdateSeq.set(key, next);
+  return messageId * 1000 + next;
+}
+
+function scheduleHelper(params: {
+  deviceId: string;
+  peerId: number;
+  baseUpdateId: number;
+  messageId: number;
+  messageDate: number;
+  peerTitle: string;
+  text: string;
+}) {
+  const key = `${params.deviceId}:${params.peerId}`;
+  const latestKey = `${params.deviceId}:${params.peerId}:${params.messageId}`;
+  helperLatestText.set(latestKey, params.text);
+  const existing = helperTimers.get(key);
+  if (existing) clearTimeout(existing);
+  if (!helperEligibleText(params.text)) {
+    helperTimers.delete(key);
+    return;
+  }
+  helperTimers.set(
+    key,
+    setTimeout(() => {
+      helperTimers.delete(key);
+      void (async () => {
+        const latest = helperLatestText.get(latestKey);
+        if (latest !== params.text || !helperEligibleText(latest ?? "")) return;
+        const recent = store.pullUpdates(params.peerId, Math.max(0, params.baseUpdateId - 5000), 5)
+          .map((u) => u.message?.text)
+          .filter((x): x is string => !!x);
+        const helperItems = await suggestHelperItems({
+          buddyTitle: params.peerTitle,
+          agentText: params.text,
+          recentMessages: recent,
+        });
+        if (!helperItems.length) return;
+        store.insertUpdate(params.peerId, {
+          update_id: params.baseUpdateId + 999,
+          message: {
+            message_id: params.messageId,
+            date: params.messageDate,
+            chat: { id: params.peerId, type: "private" },
+            from: { id: params.peerId, is_bot: true, first_name: params.peerTitle },
+            helper_items: helperItems,
+          },
+        });
+      })().catch((e) => log.warn(`helper async insert failed: ${rpcError(e)}`));
+    }, 14000),
+  );
+}
+
+function cancelHelper(deviceId: string, peerId: number) {
+  const key = `${deviceId}:${peerId}`;
+  const existing = helperTimers.get(key);
+  if (existing) clearTimeout(existing);
+  helperTimers.delete(key);
+}
+
+function buttonStyle(label: string): InlineKeyboardButton["style"] {
+  if (/삭제|취소|거절|중단|실패|delete|cancel|reject|stop/i.test(label)) return "danger";
+  if (/확인|승인|완료|저장|선택|ok|confirm|approve|save|done/i.test(label)) return "success";
+  return "default";
+}
+
+function inlineButtonFromMtproto(button: any, row: number, col: number): InlineKeyboardButton {
+  const label = String(button.text ?? "").trim() || "버튼";
+  const id = `r${row}c${col}`;
+  const className = String(button.className ?? "");
+  if (className === "KeyboardButtonCallback") return { id, label, type: "callback", style: buttonStyle(label) };
+  if (className === "KeyboardButtonUrl") return { id, label, type: "url", url: String(button.url ?? ""), style: "primary" };
+  if (className === "KeyboardButtonWebView" || className === "KeyboardButtonSimpleWebView") {
+    return { id, label, type: "web_app", url: String(button.url ?? ""), style: "primary" };
+  }
+  if (className === "KeyboardButtonUrlAuth") return { id, label, type: "login_url", url: String(button.url ?? ""), style: "primary" };
+  if (className === "KeyboardButtonSwitchInline") return { id, label, type: "switch_inline", disabled: true };
+  if (className === "KeyboardButtonCopy") return { id, label, type: "copy", copyText: String(button.copyText ?? label), style: "default" };
+  return { id, label, type: "unsupported", disabled: true };
+}
+
+function extractInlineKeyboard(markup: any): InlineKeyboard | undefined {
+  if (!markup || String(markup.className ?? "") !== "ReplyInlineMarkup" || !Array.isArray(markup.rows)) return undefined;
+  const rows = markup.rows
+    .map((row: any, ri: number) => Array.isArray(row.buttons) ? row.buttons.map((b: any, ci: number) => inlineButtonFromMtproto(b, ri, ci)) : [])
+    .filter((row: InlineKeyboardButton[]) => row.length > 0);
+  return rows.length ? { rows } : undefined;
+}
 
 /** Classify a message's media (photo/document) so the app can render received files. */
 function classifyMedia(msg: any): MediaDescriptor | null {
@@ -120,7 +333,7 @@ function classifyMedia(msg: any): MediaDescriptor | null {
 
 /** Attach the incoming-message receiver that buffers replies into `updates` + pushes. */
 function attachReceiver(deviceId: string, client: TelegramClient): void {
-  client.addEventHandler(async (event: unknown) => {
+  const handleMessageEvent = async (event: unknown, edited: boolean) => {
     try {
       const msg = (event as { message?: any }).message;
       if (!msg) return;
@@ -131,9 +344,13 @@ function attachReceiver(deviceId: string, client: TelegramClient): void {
       if (!peerId) return;
       const peer = store.getPeer(deviceId, peerId);
       if (!peer) return; // not a subscribed peer — ignore
-      const text: string = entitiesToMarkdown(msg.message ?? "", msg.entities as MdEntity[] | undefined);
+      const rawText: string = entitiesToMarkdown(msg.message ?? "", msg.entities as MdEntity[] | undefined);
+      const visibleText = !outgoing ? cleanAgentVisibleText(rawText) : rawText;
+      const extracted = !outgoing ? extractAgentPayloads(visibleText) : { text: visibleText, payloads: [] };
+      const text = extracted.text;
       const mediaInfo = classifyMedia(msg);
-      if (!text && !mediaInfo) return; // nothing renderable (e.g. service message)
+      const inlineKeyboard = extractInlineKeyboard(msg.replyMarkup);
+      if (!text && !mediaInfo && extracted.payloads.length === 0 && !inlineKeyboard) return; // nothing renderable (e.g. service message)
       // Telegram message_id is monotonic per chat → preserves order and is the /pull cursor.
       const updateId = Number(msg.id);
       // Telegram auto-attaches a webpage preview (title/desc/photo) for links → surface it.
@@ -153,8 +370,10 @@ function attachReceiver(deviceId: string, client: TelegramClient): void {
       const media = mediaInfo
         ? { ...mediaInfo, url: `/media?deviceId=${encodeURIComponent(deviceId)}&peer=${peerId}&msg=${updateId}` }
         : undefined;
+      const baseUpdateId = updateId * 1000;
+      const eventUpdateId = edited ? nextEditUpdateId(deviceId, peerId, updateId) : baseUpdateId;
       const update: TgUpdate = {
-        update_id: updateId,
+        update_id: eventUpdateId,
         message: {
           message_id: updateId,
           date: Number(msg.date),
@@ -164,11 +383,26 @@ function attachReceiver(deviceId: string, client: TelegramClient): void {
           outgoing,
           ...(preview ? { preview } : {}),
           ...(media ? { media } : {}),
+          ...(extracted.payloads.length ? { agent_payload: extracted.payloads[0], agent_payloads: extracted.payloads } : {}),
+          inline_keyboard: inlineKeyboard ?? null,
         },
       };
       store.insertUpdate(peerId, update);
+      if (!outgoing && inlineKeyboard) {
+        cancelHelper(deviceId, peerId);
+      } else if (!outgoing && text.trim()) {
+        scheduleHelper({
+          deviceId,
+          peerId,
+          baseUpdateId,
+          messageId: updateId,
+          messageDate: Number(msg.date),
+          peerTitle: peer.title ?? "Agent",
+          text,
+        });
+      }
       // Only push for the bot's replies — never notify the user about their own messages.
-      if (!outgoing) {
+      if (!outgoing && !edited && helperEligibleText(text)) {
         const targets = store.pushTargets(peerId);
         if (targets.length && update.message) {
           await sendPushes(
@@ -185,7 +419,9 @@ function attachReceiver(deviceId: string, client: TelegramClient): void {
     } catch (e) {
       log.warn(`mtproto receive handler error: ${rpcError(e)}`);
     }
-  }, new NewMessage({}));
+  };
+  client.addEventHandler((event: unknown) => handleMessageEvent(event, false), new NewMessage({}));
+  client.addEventHandler((event: unknown) => handleMessageEvent(event, true), new EditedMessage({}));
 }
 
 async function finishLogin(deviceId: string, client: TelegramClient): Promise<number> {
@@ -214,6 +450,35 @@ export const mtproto = {
     };
     pending.set(deviceId, { client, phoneCodeHash: res.phoneCodeHash, phone });
     store.upsertUserSession({ deviceId, phone, status: "pending" });
+  },
+
+  async clickInlineButton(
+    deviceId: string,
+    peerId: number,
+    messageId: number,
+    buttonId: string,
+  ): Promise<{ message?: string; alert?: boolean; url?: string }> {
+    const client = clients.get(deviceId);
+    if (!client) throw new Error("not signed in");
+    const match = /^r(\d+)c(\d+)$/.exec(buttonId);
+    if (!match) throw new Error("bad button id");
+    const row = Number(match[1]);
+    const col = Number(match[2]);
+    const peer = store.getPeer(deviceId, peerId);
+    const target: string | number = peer?.username ? peer.username : peerId;
+    const messages = (await client.getMessages(target, { ids: [messageId] })) as unknown as Array<any>;
+    const msg = messages?.[0];
+    if (!msg) throw new Error("message not found");
+    const keyboard = extractInlineKeyboard(msg.replyMarkup);
+    const button = keyboard?.rows[row]?.[col];
+    if (!button || button.type !== "callback") throw new Error("not a callback button");
+    const result = await msg.click({ i: row, j: col }) as unknown;
+    const answer = result as { message?: string; alert?: boolean; url?: string };
+    return {
+      message: answer?.message ? String(answer.message) : undefined,
+      alert: !!answer?.alert,
+      url: answer?.url ? String(answer.url) : undefined,
+    };
   },
 
   /** Step 2: submit the login code. Returns needs2fa=true when a cloud password is set. */
@@ -280,13 +545,12 @@ export const mtproto = {
       const sent = (await client.sendMessage(target, opts)) as { id: number };
       return Number(sent.id);
     } catch (e) {
-      // Stale access hash / entity cache → re-resolve by username and retry once.
-      if (peer?.username) {
-        await this.resolvePeer(deviceId, peer.username);
-        const sent = (await client.sendMessage(peer.username, opts)) as { id: number };
-        return Number(sent.id);
-      }
-      throw e;
+      const sent = (await retrySendTarget(
+        peer,
+        (retryTarget) => client.sendMessage(retryTarget, opts),
+        async (username) => { await this.resolvePeer(deviceId, username); },
+      )) as { id: number };
+      return Number(sent.id);
     }
   },
 
@@ -302,18 +566,28 @@ export const mtproto = {
     const target: string | number = peer?.username ? peer.username : peerId;
     const { buffer, fileName, mime, kind, caption } = opts;
     const file = new CustomFile(fileName, buffer.length, "", buffer);
-    const sent = (await client.sendFile(target, {
-      file,
-      caption,
-      // documents (pdf/docx/xlsx/pptx/txt) keep their filename; media (image/video) send inline.
-      forceDocument: kind === "document",
-      voiceNote: kind === "voice",
-      supportsStreaming: kind === "video",
-      attributes:
-        kind === "document" || kind === "audio"
-          ? [new Api.DocumentAttributeFilename({ fileName })]
-          : undefined,
-    })) as { id: number };
+    const send = (retryTarget: any) => client.sendFile(retryTarget, {
+        file,
+        caption,
+        // documents (pdf/docx/xlsx/pptx/txt) keep their filename; media (image/video) send inline.
+        forceDocument: kind === "document",
+        voiceNote: kind === "voice",
+        supportsStreaming: kind === "video",
+        attributes:
+          kind === "document" || kind === "audio"
+            ? [new Api.DocumentAttributeFilename({ fileName })]
+            : undefined,
+      });
+    let sent: { id: number };
+    try {
+      sent = (await send(target)) as { id: number };
+    } catch {
+      sent = (await retrySendTarget(
+        peer,
+        send,
+        async (username) => { await this.resolvePeer(deviceId, username); },
+      )) as { id: number };
+    }
     void mime; // GramJS infers mime from the filename extension
     return Number(sent.id);
   },
@@ -331,11 +605,21 @@ export const mtproto = {
     const target: string | number = peer?.username ? peer.username : peerId;
     const allDocs = items.every((i) => i.kind === "document");
     const files = items.map((i) => new CustomFile(i.fileName, i.buffer.length, "", i.buffer));
-    const sent = (await client.sendFile(target, {
+    const send = (retryTarget: any) => client.sendFile(retryTarget, {
       file: files, // array → grouped album (one bubble in Telegram clients)
       caption,
       forceDocument: allDocs || undefined,
-    })) as { id: number } | { id: number }[];
+    });
+    let sent: { id: number } | { id: number }[];
+    try {
+      sent = (await send(target)) as { id: number } | { id: number }[];
+    } catch {
+      sent = (await retrySendTarget(
+        peer,
+        send,
+        async (username) => { await this.resolvePeer(deviceId, username); },
+      )) as { id: number } | { id: number }[];
+    }
     const first = Array.isArray(sent) ? sent[0] : sent;
     return Number(first?.id ?? 0);
   },

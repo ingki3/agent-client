@@ -60,7 +60,7 @@ class RelayPullSource implements ReceiveSource {
   async catchUp(buddyId: string): Promise<void> {
     const botId = this.botIdFor(buddyId);
     if (botId == null) return;
-    const since = chat.currentOffset(buddyId);
+    const since = Math.max(0, chat.currentOffset(buddyId) - 2500);
     const updates = await relayClient.pull(botId, since);
     if (updates.length) chat.ingestUpdates(buddyId, updates);
   }

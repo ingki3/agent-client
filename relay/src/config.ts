@@ -18,6 +18,8 @@ const rawKey = process.env.RELAY_MASTER_KEY;
 // the user-session path (GramJS); the legacy bot-token push path works without them.
 const apiId = Number(process.env.TELEGRAM_API_ID ?? 0);
 const apiHash = process.env.TELEGRAM_API_HASH ?? "";
+const helperEnabled = process.env.HELPER_ENABLED !== "false";
+const ttsEnabled = process.env.TTS_ENABLED !== "false";
 
 export const config = {
   port: Number(process.env.PORT ?? 8787),
@@ -35,4 +37,14 @@ export const config = {
   apiHash,
   /** Whether the user-account (MTProto) path is configured. */
   mtprotoEnabled: !!(apiId && apiHash),
+  helperEnabled,
+  geminiApiKey: process.env.GEMINI_API_KEY ?? "",
+  helperModel: process.env.HELPER_MODEL ?? "gemini-2.5-flash",
+  ttsEnabled,
+  ttsProvider: process.env.TTS_PROVIDER ?? "edge-tts",
+  ttsVoice: process.env.TTS_VOICE ?? "ko-KR-InJoonNeural",
+  ttsFallbackVoice: process.env.TTS_FALLBACK_VOICE ?? "ko-KR-HyunsuMultilingualNeural",
+  ttsRate: process.env.TTS_RATE ?? "+8%",
+  ttsCacheDir: process.env.TTS_CACHE_DIR ?? ".cache/tts",
+  ttsMaxInputChars: Number(process.env.TTS_MAX_INPUT_CHARS ?? 6000),
 } as const;

@@ -13,7 +13,7 @@
  * sender; incoming messages from the peer are rendered as "agent" (see ingestUpdates).
  */
 import { create } from "zustand";
-import type { Message, MessageStatus } from "@/domain/entities";
+import type { Message, MessageStatus, MessageTts, TtsMode } from "@/domain/entities";
 import { uid } from "@/lib/id";
 import { type TgUpdate } from "@/infrastructure/api/telegramBotApi";
 import { relayClient } from "@/infrastructure/api/relayClient";
@@ -26,12 +26,23 @@ import { seedMessages, cannedReply, syntheticTrace } from "@/mock/seed";
 import { receiveSource, setChatBridge } from "@/infrastructure/receive/ReceiveSource";
 import { useBuddiesStore } from "./buddies";
 import { useTraceStore } from "./trace";
+import { useTasksStore } from "./tasks";
+import { useArtifactsStore } from "./artifacts";
+import { useFormsStore } from "./forms";
 
 const streamHandles = new Map<string, StreamHandle>();
 // Safety timers that auto-clear a stuck "입력 중" indicator if no reply arrives.
 const awaitTimers = new Map<string, ReturnType<typeof setTimeout>>();
 // Receive cursor per buddy (Telegram update_id / relay pull cursor), seeded from kv.
 const offsets = new Map<string, number>();
+
+function firstUrl(text: string): string | undefined {
+  return text.match(/https?:\/\/[^\s)\]}>"']+/i)?.[0]?.replace(/[.,;:!?]+$/g, "");
+}
+
+function textHasUrl(text?: string): boolean {
+  return !!text && /https?:\/\/[^\s)\]}>"']+/i.test(text);
+}
 
 type ChatState = {
   byBuddy: Record<string, Message[]>;
@@ -41,6 +52,10 @@ type ChatState = {
 
   hydrate: (buddyId: string) => Promise<void>;
   send: (buddyId: string, text: string, reply?: { messageId?: number; text: string }) => Promise<void>;
+  appendLocalUserMessage: (buddyId: string, text: string) => void;
+  appendLocalSystemMessage: (buddyId: string, text: string) => void;
+  prepareTts: (buddyId: string, messageId: string, mode: TtsMode) => Promise<{ audioUrl: string; script: string; mode: TtsMode } | null>;
+  setMessageTts: (buddyId: string, messageId: string, tts: MessageTts) => void;
   /** Send one or more attachments as a single bubble (album) with an optional caption. */
   sendAttachments: (buddyId: string, picked: PickedAttachment[], caption?: string) => Promise<void>;
   retry: (buddyId: string, messageId: string) => Promise<void>;
@@ -87,6 +102,17 @@ export const useChatStore = create<ChatState>((set, get) => {
 
   const setStatus = (buddyId: string, messageId: string, status: MessageStatus) =>
     patch(buddyId, messageId, { status });
+
+  const attachLinkPreview = async (buddyId: string, messageId: string, text: string) => {
+    const url = firstUrl(text);
+    if (!url) return;
+    const preview = await relayClient.linkPreview(url).catch(() => null);
+    if (!preview) return;
+    const current = get().byBuddy[buddyId]?.find((m) => m.id === messageId || m.clientId === messageId);
+    if (!current || current.preview) return;
+    patch(buddyId, current.id, { preview });
+    persist(buddyId);
+  };
 
   const setAwaiting = (buddyId: string, on: boolean) => {
     const existing = awaitTimers.get(buddyId);
@@ -232,21 +258,61 @@ export const useChatStore = create<ChatState>((set, get) => {
       for (const u of updates) {
         if (u.update_id + 1 > offset) offset = u.update_id + 1;
         const m = u.message ?? u.edited_message;
-        if (!m?.text && !m?.media) continue;
+        if (!m?.text && !m?.media && !m?.helper_items?.length && !m?.agent_payload && !m?.agent_payloads?.length && !m?.inline_keyboard) continue;
         if (buddy && buddy.chatId == null) {
           useBuddiesStore.getState().update(buddyId, { chatId: m.chat.id });
           buddy.chatId = m.chat.id;
         }
         const id = `tg-${m.message_id}`;
-        if (get().byBuddy[buddyId]?.some((x) => x.id === id)) continue;
-        // `outgoing` = the user sent it (from any client) → render on the user side.
-        const preview = m.preview
+        const existing = get().byBuddy[buddyId]?.find((x) => x.id === id);
+        const preview = m.preview && textHasUrl(m.text)
           ? {
               ...m.preview,
               // relay sends a relative /media path for the photo; make it absolute.
               image: m.preview.image ? `${config.relayBase ?? ""}${m.preview.image}` : undefined,
             }
           : undefined;
+        if (existing) {
+          const patchExisting: Partial<Message> = {};
+          if (m.text && m.text !== existing.text) patchExisting.text = m.text;
+          if (preview && !existing.preview) patchExisting.preview = preview;
+          if (m.helper_items?.length) patchExisting.helperItems = m.helper_items;
+          if ("inline_keyboard" in m) patchExisting.inlineKeyboard = m.inline_keyboard ?? undefined;
+          if (Object.keys(patchExisting).length) {
+            patch(buddyId, id, patchExisting);
+            if (patchExisting.text) touchBuddy(buddyId, patchExisting.text, !m.outgoing);
+            if (!m.outgoing) gotIncoming = true;
+            persist(buddyId);
+          }
+          continue;
+        }
+        if (!m.text && !m.media && !m.agent_payload && !m.agent_payloads?.length && !m.inline_keyboard) continue;
+        const payloads = m.agent_payloads ?? (m.agent_payload ? [m.agent_payload] : []);
+        let taskId: string | undefined;
+        let artifactIds: string[] = [];
+        let formId: string | undefined;
+        for (const payload of payloads) {
+          if (payload.type === "task_update") {
+            taskId = payload.task.id;
+            useTasksStore.getState().upsertFromPayload(buddyId, payload.task, id);
+          } else if (payload.type === "artifact") {
+            artifactIds.push(payload.artifact.id);
+            taskId = payload.artifact.taskId ?? taskId;
+            useArtifactsStore.getState().upsertFromPayload(buddyId, payload.artifact, id);
+          } else if (payload.type === "form") {
+            formId = payload.form.id;
+            taskId = payload.form.taskId ?? taskId;
+            useFormsStore.getState().upsertFromPayload(buddyId, payload.form, id);
+            if (taskId) {
+              useTasksStore.getState().upsertFromPayload(
+                buddyId,
+                { id: taskId, title: "입력이 필요한 작업", status: "needs_input" },
+                id,
+              );
+            }
+          }
+        }
+        // `outgoing` = the user sent it (from any client) → render on the user side.
         const attachments = m.media
           ? [
               {
@@ -268,6 +334,11 @@ export const useChatStore = create<ChatState>((set, get) => {
           status: "done",
           preview,
           attachments,
+          taskId,
+          artifactIds: artifactIds.length ? artifactIds : undefined,
+          formId,
+          helperItems: m.helper_items,
+          inlineKeyboard: m.inline_keyboard ?? undefined,
         });
         touchBuddy(buddyId, m.text || (m.media ? `📎 ${m.media.name}` : ""), !m.outgoing);
         if (!m.outgoing) gotIncoming = true;
@@ -295,6 +366,7 @@ export const useChatStore = create<ChatState>((set, get) => {
         replyTo: reply ? { messageId: reply.messageId, text: reply.text } : undefined,
       });
       persist(buddyId);
+      void attachLinkPreview(buddyId, msgId, trimmed);
 
       if (buddy?.live) {
         await sendLive(buddyId, msgId, trimmed, reply?.messageId);
@@ -303,6 +375,64 @@ export const useChatStore = create<ChatState>((set, get) => {
         setStatus(buddyId, msgId, "done");
         streamMockReply(buddyId, trimmed);
       }
+    },
+
+  appendLocalUserMessage: (buddyId, text) => {
+      const trimmed = text.trim();
+      if (!trimmed) return;
+      const msgId = uid("u");
+      append(buddyId, {
+        id: msgId,
+        clientId: msgId,
+        buddyId,
+        role: "user",
+        text: trimmed,
+        createdAt: new Date().toISOString(),
+        status: "done",
+      });
+      touchBuddy(buddyId, trimmed);
+      persist(buddyId);
+    },
+
+    appendLocalSystemMessage: (buddyId, text) => {
+      const trimmed = text.trim();
+      if (!trimmed) return;
+      const msgId = uid("sys");
+      append(buddyId, {
+        id: msgId,
+        clientId: msgId,
+        buddyId,
+        role: "system",
+        text: trimmed,
+        createdAt: new Date().toISOString(),
+        status: "done",
+      });
+      persist(buddyId);
+    },
+
+    prepareTts: async (buddyId, messageId, mode) => {
+      const msg = get().byBuddy[buddyId]?.find((m) => m.id === messageId);
+      if (!msg || msg.role !== "agent" || msg.status !== "done" || !msg.text.trim()) return null;
+      if (msg.tts?.mode === mode && msg.tts.audioUrl && msg.tts.script && msg.tts.status !== "failed") {
+        return { audioUrl: msg.tts.audioUrl, script: msg.tts.script, mode };
+      }
+      patch(buddyId, messageId, { tts: { status: "generating", mode } });
+      persist(buddyId);
+      const result = await relayClient.createTtsAudio({ messageId, text: msg.text, mode }).catch(() => null);
+      if (!result) {
+        patch(buddyId, messageId, { tts: { status: "failed", mode, error: "음성 생성에 실패했습니다." } });
+        persist(buddyId);
+        return null;
+      }
+      const tts = { status: "ready" as const, mode: result.mode, audioUrl: result.audioUrl, script: result.script };
+      patch(buddyId, messageId, { tts });
+      persist(buddyId);
+      return { audioUrl: result.audioUrl, script: result.script, mode: result.mode };
+    },
+
+    setMessageTts: (buddyId, messageId, tts) => {
+      patch(buddyId, messageId, { tts });
+      persist(buddyId);
     },
 
     sendAttachments: async (buddyId, picked, caption) => {

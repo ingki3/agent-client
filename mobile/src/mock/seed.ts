@@ -3,7 +3,7 @@
  * These power the usability-test build and demonstrate streaming + markdown + trace
  * without a backend. Real buddies (added via a token) use the live Telegram path.
  */
-import type { Buddy, Message } from "@/domain/entities";
+import type { AgentArtifact, AgentForm, AgentTask, Buddy, Message } from "@/domain/entities";
 import type { StreamEvent } from "@/infrastructure/api/traceStream";
 
 export const seedBuddies: Buddy[] = [
@@ -85,6 +85,18 @@ export const seedMessages: Record<string, Message[]> = {
       createdAt: "2026-05-17T08:11:30+09:00",
       traceSummary: { thinkingSteps: 2, toolCalls: 3, elapsedMs: 1820 },
       traceId: "trace-m3",
+      taskId: "task-mail-review",
+      artifactIds: ["artifact-mail-summary"],
+    }),
+    msg({
+      id: "m4",
+      buddyId: "buddy-work",
+      role: "agent",
+      status: "done",
+      text: "단가 재협상 메일을 보내기 전에 조건을 확인해 주세요.",
+      createdAt: "2026-05-17T08:12:00+09:00",
+      taskId: "task-mail-review",
+      formId: "form-mail-approval",
     }),
   ],
   "buddy-life": [
@@ -116,6 +128,69 @@ export const seedMessages: Record<string, Message[]> = {
       createdAt: "2026-05-15T19:03:00+09:00",
       status: "done",
     }),
+  ],
+};
+
+export const seedTasks: Record<string, AgentTask[]> = {
+  "buddy-work": [
+    {
+      id: "task-mail-review",
+      buddyId: "buddy-work",
+      title: "협력사 메일 검토",
+      status: "needs_input",
+      createdAt: "2026-05-17T08:11:30+09:00",
+      updatedAt: "2026-05-17T08:12:00+09:00",
+      sourceMessageId: "m3",
+      artifactIds: ["artifact-mail-summary"],
+    },
+  ],
+};
+
+export const seedArtifacts: Record<string, AgentArtifact[]> = {
+  "buddy-work": [
+    {
+      id: "artifact-mail-summary",
+      buddyId: "buddy-work",
+      taskId: "task-mail-review",
+      sourceMessageId: "m3",
+      title: "협력사 메일 요약",
+      kind: "markdown",
+      content: "## 메일 요약\n\n- 견적 확인: 단가 재협상 필요\n- 미팅 조율: 다음 주 화/목 후보\n\n| 항목 | 추천 액션 |\n|---|---|\n| 견적 | 5% 인하 요청 |\n| 일정 | 목요일 오전 제안 |",
+      createdAt: "2026-05-17T08:11:30+09:00",
+    },
+  ],
+};
+
+export const seedForms: Record<string, AgentForm[]> = {
+  "buddy-work": [
+    {
+      id: "form-mail-approval",
+      buddyId: "buddy-work",
+      taskId: "task-mail-review",
+      sourceMessageId: "m4",
+      title: "회신 조건 확인",
+      description: "에이전트가 보낼 답장에 포함할 조건을 선택하세요.",
+      fields: [
+        {
+          id: "discount",
+          kind: "single_select",
+          label: "요청 할인율",
+          required: true,
+          options: [
+            { label: "3%", value: "3" },
+            { label: "5%", value: "5" },
+            { label: "7%", value: "7" },
+          ],
+        },
+        { id: "meeting_date", kind: "date", label: "선호 미팅일", placeholder: "2026-05-21" },
+        { id: "note", kind: "text", label: "추가 요청", placeholder: "짧게 입력" },
+        { id: "approved", kind: "confirm", label: "이 조건으로 답장 작성 승인", required: true },
+      ],
+      submitLabel: "전달",
+      cancelLabel: "취소",
+      status: "pending",
+      createdAt: "2026-05-17T08:12:00+09:00",
+    },
   ],
 };
 

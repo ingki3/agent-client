@@ -13,6 +13,7 @@ import { config } from "../config";
 import { secureStore, SecureKeys } from "../storage/secureStore";
 import { uid } from "@/lib/id";
 import type { TgUpdate } from "./telegramBotApi";
+import type { FormValue, LinkPreview, TtsMode } from "@/domain/entities";
 
 // botToken is optional: MTProto peers register with no token (the relay's user-account
 // client receives for them — no per-bot getUpdates loop).
@@ -29,6 +30,20 @@ export type AuthStatus = {
   connected: boolean;
   tgUserId?: number;
   phone?: string;
+};
+
+export type TtsAudioResult = {
+  audioUrl: string;
+  script: string;
+  mode: TtsMode;
+  cacheKey: string;
+  generated?: boolean;
+};
+
+export type InlineKeyboardCallbackResult = {
+  message?: string;
+  alert?: boolean;
+  url?: string;
 };
 
 async function deviceId(): Promise<string> {
@@ -102,6 +117,33 @@ export const relayClient = {
     if (!res.ok) return [];
     const body = (await res.json()) as { ok: boolean; updates?: TgUpdate[] };
     return body.ok && body.updates ? body.updates : [];
+  },
+
+  async linkPreview(url: string): Promise<LinkPreview | null> {
+    if (!config.relayBase) return null;
+    const id = await secureStore.get(SecureKeys.deviceId);
+    if (!id) return null;
+    const body = await postJson("/link/preview", { deviceId: id, url });
+    if (!body?.ok || !body.preview || typeof body.preview !== "object") return null;
+    return body.preview as LinkPreview;
+  },
+
+  async createTtsAudio(payload: { messageId: string; text: string; mode: TtsMode; voice?: string }): Promise<TtsAudioResult | null> {
+    if (!config.relayBase) return null;
+    const id = await secureStore.get(SecureKeys.deviceId);
+    if (!id) return null;
+    const body = await postJson("/tts/audio", { deviceId: id, ...payload });
+    if (!body?.ok || typeof body.audioUrl !== "string" || typeof body.script !== "string") return null;
+    const audioUrl = body.audioUrl.startsWith("http")
+      ? body.audioUrl
+      : `${config.relayBase}${body.audioUrl}`;
+    return {
+      audioUrl,
+      script: body.script,
+      mode: (body.mode === "brief" || body.mode === "explain" || body.mode === "action_items" ? body.mode : payload.mode) as TtsMode,
+      cacheKey: String(body.cacheKey ?? ""),
+      generated: !!body.generated,
+    };
   },
 
   // ─── MTProto (user-account) ────────────────────────────────────────────────
@@ -197,5 +239,61 @@ export const relayClient = {
     if (!body) throw new Error("network");
     if (!body.ok) throw new Error(String(body.error ?? "send_failed"));
     return body.messageId as number;
+  },
+
+  async submitForm(
+    peerId: number,
+    payload: { formId: string; taskId?: string; status: "submitted" | "cancelled"; values: Record<string, FormValue> },
+  ): Promise<boolean> {
+    const id = await deviceId();
+    const body = await postJson("/form/submit", { deviceId: id, peerId, ...payload });
+    return !!body?.ok;
+  },
+
+  async submitHelperAction(
+    peerId: number,
+    payload: {
+      helperItemId: string;
+      helperType: string;
+      action: "submit" | "cancel" | "revise" | "quick_reply" | "save_artifact";
+      label?: string;
+      value?: string;
+      values?: Record<string, FormValue>;
+      source?: {
+        messageId?: number;
+        text?: string;
+        excerpt?: string;
+        urls?: string[];
+        handles?: string[];
+        preview?: { url?: string; title?: string; description?: string; siteName?: string };
+        attachments?: Array<{ kind?: string; name?: string; mime?: string; size?: number }>;
+        recentMessages?: Array<{
+          messageId?: number;
+          role?: string;
+          text?: string;
+          excerpt?: string;
+          urls?: string[];
+          handles?: string[];
+          preview?: { url?: string; title?: string; description?: string; siteName?: string };
+          attachments?: Array<{ kind?: string; name?: string; mime?: string; size?: number }>;
+        }>;
+      };
+    },
+  ): Promise<boolean> {
+    const id = await deviceId();
+    const body = await postJson("/helper/submit", { deviceId: id, peerId, ...payload });
+    return !!body?.ok;
+  },
+
+  async clickInlineKeyboardButton(peerId: number, messageId: number, buttonId: string): Promise<InlineKeyboardCallbackResult | null> {
+    const id = await deviceId();
+    const body = await postJson("/inline-keyboard/callback", { deviceId: id, peerId, messageId, buttonId });
+    if (!body?.ok) return null;
+    const result = body.result && typeof body.result === "object" ? body.result as Record<string, unknown> : {};
+    return {
+      message: typeof result.message === "string" ? result.message : undefined,
+      alert: !!result.alert,
+      url: typeof result.url === "string" ? result.url : undefined,
+    };
   },
 };

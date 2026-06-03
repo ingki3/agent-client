@@ -9,6 +9,10 @@ import { fontSize, radius, space } from "@/design/tokens";
 import type { Attachment, LinkPreview as LinkPreviewType, Message, MessageStatus } from "@/domain/entities";
 import { Markdown } from "@/ui/markdown/Markdown";
 import { TracePanel } from "@/ui/components/TracePanel";
+import { AgentWorkCards } from "./AgentWorkCards";
+import { HelperActionCards } from "./HelperActionCards";
+import { MessageTtsControls } from "./MessageTtsControls";
+import { InlineKeyboardPanel } from "./InlineKeyboardPanel";
 
 function fmtDuration(ms?: number): string {
   if (!ms) return "";
@@ -50,6 +54,10 @@ function AttachmentView({ a, tint }: { a: Attachment; tint: string }) {
 
 function hostOf(url: string): string {
   return url.replace(/^https?:\/\//i, "").replace(/^www\./i, "").split(/[/?#]/)[0] ?? url;
+}
+
+function hasVisibleUrl(message: Message): boolean {
+  return /https?:\/\/[^\s)\]}>"']+/i.test(message.text) || /\]\(https?:\/\/[^)\s]+\)/i.test(message.text);
 }
 
 /** Telegram-style link card: optional cover image, site, title, description, host. */
@@ -181,10 +189,8 @@ export function ChatBubble({ message, onLongPress }: { message: Message; onLongP
                 {message.text}
               </Text>
             ) : (
-              <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "flex-end" }}>
-                <View style={{ flexShrink: 1 }}>
-                  <Markdown text={message.text} baseColor={bubbleTextColor} streaming={isStreaming} />
-                </View>
+              <View style={{ width: "100%" }}>
+                <Markdown text={message.text} baseColor={bubbleTextColor} streaming={isStreaming} />
                 {isStreaming ? <Text style={{ color: bubbleTextColor, fontSize: fontSize.body }}>▍</Text> : null}
               </View>
             )
@@ -193,7 +199,7 @@ export function ChatBubble({ message, onLongPress }: { message: Message; onLongP
           ) : null}
         </Pressable>
 
-        {message.preview ? <LinkPreview preview={message.preview} /> : null}
+        {message.preview && hasVisibleUrl(message) ? <LinkPreview preview={message.preview} /> : null}
 
         <View
           style={{
@@ -218,6 +224,10 @@ export function ChatBubble({ message, onLongPress }: { message: Message; onLongP
         </View>
 
         {!isUser && message.traceId ? <TracePanel messageId={message.id} streaming={isStreaming} /> : null}
+        {!isUser ? <AgentWorkCards message={message} /> : null}
+        {!isUser ? <MessageTtsControls message={message} /> : null}
+        {!isUser ? <InlineKeyboardPanel message={message} /> : null}
+        {!isUser ? <HelperActionCards message={message} /> : null}
       </View>
     </View>
   );
