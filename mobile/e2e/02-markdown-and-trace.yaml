@@ -1,0 +1,45 @@
+# USER_FLOW §3.4/§3.5 — GFM 마크다운 렌더(FR-15) + trace 요약 칩 표시(FR-17).
+#
+# Note: trace 패널 *펼침*과 노드/마스킹(FR-18~21)은 시뮬레이터 소프트 키보드가 칩 하단
+# 펼침 영역을 가리고 Maestro가 이 환경에서 키보드를 내리지 못해 E2E로는 불안정하다.
+# 해당 동작은 도메인 단위 테스트(scripts/smoke-domain.ts: 노드 파싱 + 민감값 마스킹)와
+# 실기기 수동 검증으로 커버한다. 여기서는 마크다운 렌더와 칩 노출까지 검증한다.
+appId: dev.simplist.agentclient.mockup
+---
+- launchApp:
+    clearState: true
+- runFlow: subflows/login.yaml
+- tapOn: "Work Buddy"
+- waitForAnimationToEnd
+- tapOn:
+    id: "chatInput"
+- waitForAnimationToEnd
+# >14자 → 리치 마크다운 응답. Maestro can't type non-ASCII on Android (adb input is
+# ASCII-only — issue #146); the reply branches on length, not content, so an ASCII string
+# >14 chars triggers the same RICH_REPLY. Korean reply rendering is asserted below regardless.
+- runFlow:
+    when:
+      platform: iOS
+    commands:
+      - inputText: "이번 분기 매출 표랑 코드 예시까지 정리해줘"
+- runFlow:
+    when:
+      platform: Android
+    commands:
+      - inputText: "summarize this quarter revenue table and a code sample"
+- tapOn:
+    id: "chatSend"
+# The rich reply streams in; it's taller than the screen and the list doesn't auto-scroll
+# to its end, so scroll the message list down to the GFM blockquote — rendered with no raw
+# '>' markup (FR-15). scrollUntilVisible also absorbs the streaming delay (retries to timeout).
+- scrollUntilVisible:
+    element:
+      text: ".*추가로 필요한 게 있으면 알려주세요.*"
+    direction: DOWN
+    timeout: 20000
+# Trace summary chip is attached at the end of the agent reply (FR-17), just below the reply.
+- scrollUntilVisible:
+    element:
+      id: "traceToggle"
+    direction: DOWN
+    timeout: 5000

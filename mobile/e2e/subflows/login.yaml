@@ -1,0 +1,39 @@
+# Reusable: one-time user-id onboarding → lands on the friends list (S-02′ → S-10).
+# (Replaces the old phone + OTP login; single-user model.)
+# Caller must `launchApp` (usually with clearState: true) before runFlow.
+appId: dev.simplist.agentclient.mockup
+---
+# Android emulators with a 16 KB-page system image (e.g. Pixel 7/10) show an OS "Android App
+# Compatibility" dialog on every fresh launch — clearState resets its "Don't Show Again", so
+# it returns each flow. It renders a beat after launch, so wait for its button then tap it by
+# resource-id (more reliable than the curly-apostrophe label). optional/onAndroid only → a
+# no-op on iOS and on non-16KB devices where the dialog never appears.
+- runFlow:
+    when:
+      visible:
+        id: "android:id/button1"
+    commands:
+      - tapOn:
+          id: "android:id/button1"
+- extendedWaitUntil:
+    visible: "Agent Client"
+    timeout: 8000
+    optional: true
+# If the dialog appeared after the first check, dismiss it now and assert the app.
+- runFlow:
+    when:
+      visible:
+        id: "android:id/button1"
+    commands:
+      - tapOn:
+          id: "android:id/button1"
+- assertVisible: "Agent Client"
+- tapOn:
+    id: "userIdInput"
+- inputText: "6233568410"
+- tapOn:
+    id: "startButton"
+# verify → hydrate → navigate is async; wait for the friends list to mount.
+- extendedWaitUntil:
+    visible: "Work Buddy" # friends list (seed buddies) reached
+    timeout: 10000
