@@ -1,285 +1,509 @@
 /**
- * GFM markdown renderer (FR-15). Consumes the dependency-free AST from
- * `parseMarkdown` and maps it to RN primitives. Code fences use a monospace box
- * (language label shown; no syntax highlight in the MVP build to avoid a heavy dep —
- * the renderer is AST-based so highlighting can be added behind the same interface).
+ * Markdown — GFM full-spec renderer for chat bubbles (FR-15, TECH §3.3).
  *
- * `streaming` enables the safe-incomplete-token policy (no raw `**` / dangling
- * fences shown mid-stream) and renders an unterminated code fence as a loading box.
+ * Pipeline (no HTML at any step):
+ *   text → parser.ts (marked lexer) → BlockNode tree → React Native View / Text
+ *
+ * Memoization:
+ *   - Component is memo() — re-renders only when text or layout-affecting props change.
+ *   - Internal parse result is cached by exact text identity in a small LRU. Chat
+ *     bubbles re-render frequently as scroll changes; cache hit = no marked work.
+ *
+ * Sandboxing:
+ *   - HTML tokens are dropped in parser.ts. Links go through onLinkPress (default:
+ *     expo-linking openURL). Image rendering uses expo-image with cache=memory-disk.
  */
-import { memo, useState, type ReactNode } from "react";
-import { View, Text, Linking, Platform, Pressable, ScrollView, type TextStyle } from "react-native";
-import * as Clipboard from "expo-clipboard";
-import { useTheme } from "@/design/theme";
-import { fontSize, radius, space } from "@/design/tokens";
-import { parseMarkdown } from "@/domain/markdown/parse";
-import type { Align, Block, Inline } from "@/domain/markdown/types";
+import { Image } from 'expo-image';
+import * as Linking from 'expo-linking';
+import { memo, useMemo, useCallback, type ReactNode } from 'react';
+import { Linking as RNLinking, StyleSheet, Text, View } from 'react-native';
 
-const MONO = Platform.select({ ios: "Menlo", android: "monospace", default: "monospace" });
+import { parseMarkdown, type BlockNode, type InlineNode, type ListItem } from './parser';
+import { highlight, type SyntaxKind } from './syntax';
+import { useTheme } from '../theme/ThemeProvider';
+import { fontFamily, fontSize, radius, space } from '../theme/tokens';
 
-type Colors = ReturnType<typeof useTheme>["color"];
+const HEADING_SIZE: Record<1 | 2 | 3 | 4 | 5 | 6, number> = {
+  1: fontSize['title-xl'],
+  2: fontSize['title-lg'],
+  3: fontSize['title-md'],
+  4: fontSize['title-sm'],
+  5: fontSize['body-lg'],
+  6: fontSize.body,
+};
 
-function renderInline(nodes: Inline[], color: Colors, baseColor: string, key: string): ReactNode[] {
-  return nodes.map((n, i) => {
-    const k = `${key}-${i}`;
-    switch (n.type) {
-      case "text":
-        return (
-          <Text key={k} style={{ color: baseColor }}>
-            {n.value}
-          </Text>
-        );
-      case "strong":
-        return (
-          <Text key={k} style={{ fontWeight: "700", color: baseColor }}>
-            {renderInline(n.children, color, baseColor, k)}
-          </Text>
-        );
-      case "em":
-        return (
-          <Text key={k} style={{ fontStyle: "italic", color: baseColor }}>
-            {renderInline(n.children, color, baseColor, k)}
-          </Text>
-        );
-      case "del":
-        return (
-          <Text key={k} style={{ textDecorationLine: "line-through", color: baseColor }}>
-            {renderInline(n.children, color, baseColor, k)}
-          </Text>
-        );
-      case "code":
-        return (
-          <Text
-            key={k}
-            style={{
-              fontFamily: MONO,
-              fontSize: fontSize.code,
-              color: color("on-trace-summary"),
-              backgroundColor: color("trace-summary"),
-            }}
-          >
-            {` ${n.value} `}
-          </Text>
-        );
-      case "link":
-        return (
-          <Text
-            key={k}
-            style={{ color: color("primary"), textDecorationLine: "underline" }}
-            onPress={() => void Linking.openURL(n.href).catch(() => undefined)}
-          >
-            {renderInline(n.children, color, color("primary"), k)}
-          </Text>
-        );
-    }
-  });
+/** Author of the message — bubble owner. Drives text-color inheritance. */
+export type MarkdownContext = 'user' | 'agent' | 'system';
+
+export interface MarkdownProps {
+  text: string;
+  context?: MarkdownContext;
+  /** Override link tap (default: openURL via expo-linking). */
+  onLinkPress?: (href: string) => void;
+  /** Forced max width for embedded images (defaults to 240). */
+  imageMaxWidth?: number;
 }
 
-function alignStyle(a: Align): TextStyle {
-  return { textAlign: a === "center" ? "center" : a === "right" ? "right" : "left" };
+const parseCache = new Map<string, ReturnType<typeof parseMarkdown>>();
+const PARSE_CACHE_MAX = 128;
+
+function getParsed(text: string) {
+  const cached = parseCache.get(text);
+  if (cached) return cached;
+  const parsed = parseMarkdown(text);
+  if (parseCache.size >= PARSE_CACHE_MAX) {
+    // FIFO eviction — `Map` preserves insertion order.
+    const oldest = parseCache.keys().next().value;
+    if (oldest !== undefined) parseCache.delete(oldest);
+  }
+  parseCache.set(text, parsed);
+  return parsed;
 }
 
-/** Fenced code block — header bar (language + copy) over a horizontally-scrollable
- *  monospace body, à la Telegram/IDE. Long lines scroll instead of wrapping. */
-function CodeBlock({ lang, text, loading }: { lang: string | null; text: string; loading: boolean }) {
-  const { color } = useTheme();
-  const [copied, setCopied] = useState(false);
-  const onCopy = () => {
-    void Clipboard.setStringAsync(text);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
+export const Markdown = memo(function Markdown({
+  text,
+  context = 'agent',
+  onLinkPress,
+  imageMaxWidth = 240,
+}: MarkdownProps) {
+  const theme = useTheme();
+  const baseColor = theme.color(
+    context === 'user' ? 'on-user-bubble' : 'on-agent-bubble',
+  );
+  const secondaryColor = theme.color('text-secondary');
+  const codeBg = theme.color(context === 'user' ? 'surface-overlay' : 'surface-elevated');
+  const codeFg = theme.color('text-primary');
+  const borderColor = theme.color('border');
+  const linkColor = theme.color(context === 'user' ? 'on-user-bubble' : 'primary');
+  const blockquoteBar = theme.color('border-strong');
+
+  const syntaxColor: Record<SyntaxKind, string> = {
+    keyword: theme.color('primary'),
+    string: theme.color('success'),
+    number: theme.color('warning'),
+    boolean: theme.color('warning'),
+    comment: theme.color('text-disabled'),
+    plain: codeFg,
   };
+
+  const parsed = useMemo(() => getParsed(text), [text]);
+
+  const handleLink = useCallback(
+    (href: string) => {
+      if (onLinkPress) onLinkPress(href);
+      else void RNLinking.openURL(href).catch(() => Linking.openURL(href));
+    },
+    [onLinkPress],
+  );
+
   return (
-    <View
-      style={{
-        marginVertical: space[2],
-        borderRadius: radius.md,
-        overflow: "hidden",
-        borderWidth: 1,
-        borderColor: color("border"),
-      }}
-    >
-      <View
-        style={{
-          flexDirection: "row",
-          alignItems: "center",
-          justifyContent: "space-between",
-          backgroundColor: color("surface-elevated"),
-          paddingHorizontal: space[3],
-          paddingVertical: space[2],
-          borderBottomWidth: 1,
-          borderBottomColor: color("border"),
-        }}
-      >
-        <Text style={{ color: color("text-secondary"), fontSize: fontSize.caption, fontFamily: MONO }}>
-          {lang ?? "code"}
+    <View style={styles.root}>
+      {parsed.blocks.map((block, i) => (
+        <BlockRenderer
+          key={i}
+          node={block}
+          baseColor={baseColor}
+          secondaryColor={secondaryColor}
+          codeBg={codeBg}
+          codeFg={codeFg}
+          linkColor={linkColor}
+          borderColor={borderColor}
+          blockquoteBar={blockquoteBar}
+          syntaxColor={syntaxColor}
+          onLinkPress={handleLink}
+          imageMaxWidth={imageMaxWidth}
+        />
+      ))}
+    </View>
+  );
+});
+
+interface RenderContext {
+  baseColor: string;
+  secondaryColor: string;
+  codeBg: string;
+  codeFg: string;
+  linkColor: string;
+  borderColor: string;
+  blockquoteBar: string;
+  syntaxColor: Record<SyntaxKind, string>;
+  onLinkPress: (href: string) => void;
+  imageMaxWidth: number;
+}
+
+interface BlockRendererProps extends RenderContext {
+  node: BlockNode;
+}
+
+function BlockRenderer(props: BlockRendererProps): ReactNode {
+  const { node, baseColor } = props;
+
+  switch (node.type) {
+    case 'heading':
+      return (
+        <Text
+          style={{
+            color: baseColor,
+            fontSize: HEADING_SIZE[node.depth],
+            fontFamily: fontFamily.display,
+            fontWeight: node.depth <= 3 ? '700' : '600',
+            marginTop: node.depth <= 2 ? space[3] : space[2],
+            marginBottom: space[1],
+          }}
+        >
+          {renderInline(node.children, props)}
         </Text>
-        {loading ? null : (
-          <Pressable onPress={onCopy} hitSlop={8} accessibilityRole="button" accessibilityLabel="코드 복사">
-            <Text style={{ color: copied ? color("primary") : color("text-secondary"), fontSize: fontSize.caption, fontWeight: "600" }}>
-              {copied ? "복사됨" : "⧉ 복사"}
-            </Text>
-          </Pressable>
-        )}
-      </View>
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        style={{ backgroundColor: color("surface") }}
-        contentContainerStyle={{ padding: space[3] }}
-      >
-        <Text selectable style={{ fontFamily: MONO, fontSize: fontSize.code, color: color("text-primary"), lineHeight: fontSize.code * 1.5 }}>
-          {loading ? "▍" : text}
+      );
+    case 'paragraph':
+      return (
+        <Text
+          style={{
+            color: baseColor,
+            fontSize: fontSize.body,
+            fontFamily: fontFamily.sans,
+            lineHeight: fontSize.body * 1.4,
+            marginVertical: space[1],
+          }}
+        >
+          {renderInline(node.children, props)}
         </Text>
-      </ScrollView>
+      );
+    case 'hr':
+      return (
+        <View
+          style={{
+            height: 1,
+            backgroundColor: props.borderColor,
+            marginVertical: space[3],
+          }}
+        />
+      );
+    case 'blockquote':
+      return (
+        <View
+          style={{
+            borderLeftWidth: 3,
+            borderLeftColor: props.blockquoteBar,
+            paddingLeft: space[3],
+            marginVertical: space[2],
+            opacity: 0.9,
+          }}
+        >
+          {node.children.map((child, i) => (
+            <BlockRenderer key={i} {...props} node={child} />
+          ))}
+        </View>
+      );
+    case 'code':
+      return <CodeBlock node={node} ctx={props} />;
+    case 'list':
+      return <ListBlock node={node} ctx={props} />;
+    case 'table':
+      return <TableBlock node={node} ctx={props} />;
+  }
+}
+
+function ListBlock({
+  node,
+  ctx,
+}: {
+  node: Extract<BlockNode, { type: 'list' }>;
+  ctx: RenderContext;
+}): ReactNode {
+  return (
+    <View style={{ marginVertical: space[1] }}>
+      {node.items.map((item, i) => (
+        <ListItemRow
+          key={i}
+          item={item}
+          index={i}
+          ordered={node.ordered}
+          start={node.start}
+          ctx={ctx}
+        />
+      ))}
     </View>
   );
 }
 
-function Blocks({ blocks, baseColor }: { blocks: Block[]; baseColor: string }) {
-  const { color } = useTheme();
-  const lineHeight = fontSize.body * 1.5;
-
+function ListItemRow({
+  item,
+  index,
+  ordered,
+  start,
+  ctx,
+}: {
+  item: ListItem;
+  index: number;
+  ordered: boolean;
+  start: number | null;
+  ctx: RenderContext;
+}): ReactNode {
+  const marker = ordered ? `${(start ?? 1) + index}.` : '•';
   return (
-    <>
-      {blocks.map((b, i) => {
-        const key = `b${i}`;
-        switch (b.type) {
-          case "heading": {
-            const sizes = [fontSize["title-lg"], fontSize["title-md"], fontSize["body-lg"], fontSize["title-sm"], fontSize.body, fontSize["body-sm"]];
-            return (
-              <Text
-                key={key}
-                style={{
-                  fontSize: sizes[b.level - 1],
-                  fontWeight: "700",
-                  color: baseColor,
-                  marginTop: i === 0 ? 0 : space[3],
-                  marginBottom: space[1],
-                }}
-              >
-                {renderInline(b.inline, color, baseColor, key)}
-              </Text>
-            );
-          }
-          case "paragraph":
-            return (
-              <Text key={key} style={{ fontSize: fontSize.body, lineHeight, color: baseColor, marginVertical: space[1] }}>
-                {renderInline(b.inline, color, baseColor, key)}
-              </Text>
-            );
-          case "code":
-            return <CodeBlock key={key} lang={b.lang} text={b.text} loading={b.loading} />;
-          case "blockquote":
-            return (
-              <View
-                key={key}
-                style={{
-                  borderLeftWidth: 3,
-                  borderLeftColor: color("border-strong"),
-                  paddingLeft: space[3],
-                  marginVertical: space[1],
-                }}
-              >
-                <Blocks blocks={b.children} baseColor={color("text-secondary")} />
-              </View>
-            );
-          case "hr":
-            return <View key={key} style={{ height: 1, backgroundColor: color("border"), marginVertical: space[3] }} />;
-          case "list":
-            return (
-              <View key={key} style={{ marginVertical: space[1], gap: space[1] }}>
-                {b.items.map((item, idx) => (
-                  <View key={`${key}-${idx}`} style={{ flexDirection: "row", gap: space[2] }}>
-                    <Text style={{ color: baseColor, fontSize: fontSize.body, lineHeight }}>
-                      {item.checked !== null ? (item.checked ? "☑" : "☐") : b.ordered ? `${idx + 1}.` : "•"}
-                    </Text>
-                    <View style={{ flex: 1 }}>
-                      <Text style={{ color: baseColor, fontSize: fontSize.body, lineHeight }}>
-                        {renderInline(item.inline, color, baseColor, `${key}-${idx}`)}
-                      </Text>
-                      {item.children.length > 0 ? (
-                        <View style={{ paddingLeft: space[3] }}>
-                          <Blocks blocks={item.children} baseColor={baseColor} />
-                        </View>
-                      ) : null}
-                    </View>
-                  </View>
-                ))}
-              </View>
-            );
-          case "table":
-            return (
-              <View
-                key={key}
-                style={{
-                  borderWidth: 1,
-                  borderColor: color("border"),
-                  borderRadius: radius.md,
-                  marginVertical: space[2],
-                  overflow: "hidden",
-                }}
-              >
-                <Row cells={b.header} align={b.align} baseColor={baseColor} header />
-                {b.rows.map((row, ri) => (
-                  <Row key={`${key}-r${ri}`} cells={row} align={b.align} baseColor={baseColor} />
-                ))}
-              </View>
-            );
-        }
-      })}
-    </>
+    <View style={{ flexDirection: 'row', alignItems: 'flex-start', marginVertical: 2 }}>
+      {item.task ? (
+        <View
+          style={{
+            width: 18,
+            height: 18,
+            borderRadius: radius.sm,
+            borderWidth: 1.5,
+            borderColor: ctx.borderColor,
+            backgroundColor: item.checked ? ctx.linkColor : 'transparent',
+            marginRight: space[2],
+            marginTop: 3,
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+        >
+          {item.checked ? (
+            <Text
+              style={{
+                color: ctx.baseColor === ctx.linkColor ? ctx.codeBg : '#FFFFFF',
+                fontSize: 12,
+                fontWeight: '900',
+                lineHeight: 14,
+              }}
+            >
+              ✓
+            </Text>
+          ) : null}
+        </View>
+      ) : (
+        <Text
+          style={{
+            width: 18,
+            color: ctx.secondaryColor,
+            fontSize: fontSize.body,
+            marginRight: space[1],
+          }}
+        >
+          {marker}
+        </Text>
+      )}
+      <View style={{ flex: 1 }}>
+        {item.inline.length > 0 ? (
+          <Text
+            style={{
+              color: ctx.baseColor,
+              fontSize: fontSize.body,
+              lineHeight: fontSize.body * 1.4,
+              textDecorationLine: item.task && item.checked ? 'line-through' : 'none',
+            }}
+          >
+            {renderInline(item.inline, ctx)}
+          </Text>
+        ) : null}
+        {item.blocks.map((block, i) => (
+          <BlockRenderer key={i} {...ctx} node={block} />
+        ))}
+      </View>
+    </View>
   );
 }
 
-function Row({
-  cells,
-  align,
-  baseColor,
-  header = false,
+function CodeBlock({
+  node,
+  ctx,
 }: {
-  cells: Inline[][];
-  align: Align[];
-  baseColor: string;
-  header?: boolean;
-}) {
-  const { color } = useTheme();
+  node: Extract<BlockNode, { type: 'code' }>;
+  ctx: RenderContext;
+}): ReactNode {
+  const segs = highlight(node.value, node.lang ?? undefined);
   return (
-    <View style={{ flexDirection: "row", backgroundColor: header ? color("surface-elevated") : "transparent" }}>
-      {cells.map((cell, ci) => (
-        <View
-          key={ci}
+    <View
+      style={{
+        backgroundColor: ctx.codeBg,
+        borderRadius: radius.md,
+        padding: space[3],
+        marginVertical: space[2],
+        borderWidth: 1,
+        borderColor: ctx.borderColor,
+      }}
+    >
+      {node.lang ? (
+        <Text
           style={{
-            flex: 1,
-            padding: space[2],
-            borderColor: color("border"),
-            borderRightWidth: ci < cells.length - 1 ? 1 : 0,
-            borderTopWidth: header ? 0 : 1,
+            color: ctx.secondaryColor,
+            fontSize: fontSize.caption,
+            fontFamily: fontFamily.mono,
+            marginBottom: space[1],
           }}
         >
-          <Text
-            style={[
-              { color: baseColor, fontSize: fontSize["body-sm"], fontWeight: header ? "700" : "400" },
-              alignStyle(align[ci] ?? null),
-            ]}
-          >
-            {renderInline(cell, color, baseColor, `cell-${ci}`)}
+          {node.lang}
+        </Text>
+      ) : null}
+      <Text
+        style={{
+          fontFamily: fontFamily.mono,
+          fontSize: fontSize.code,
+          lineHeight: fontSize.code * 1.45,
+          color: ctx.syntaxColor.plain,
+        }}
+      >
+        {segs.map((seg, i) => (
+          <Text key={i} style={{ color: ctx.syntaxColor[seg.kind] }}>
+            {seg.text}
           </Text>
+        ))}
+      </Text>
+    </View>
+  );
+}
+
+function TableBlock({
+  node,
+  ctx,
+}: {
+  node: Extract<BlockNode, { type: 'table' }>;
+  ctx: RenderContext;
+}): ReactNode {
+  const alignStyle = (i: number): 'left' | 'right' | 'center' =>
+    node.align[i] ?? 'left';
+  return (
+    <View
+      style={{
+        marginVertical: space[2],
+        borderWidth: 1,
+        borderColor: ctx.borderColor,
+        borderRadius: radius.md,
+        overflow: 'hidden',
+      }}
+    >
+      <View
+        style={{
+          flexDirection: 'row',
+          backgroundColor: ctx.codeBg,
+          borderBottomWidth: 1,
+          borderBottomColor: ctx.borderColor,
+        }}
+      >
+        {node.header.map((cell, i) => (
+          <Text
+            key={i}
+            style={{
+              flex: 1,
+              padding: space[2],
+              fontWeight: '700',
+              fontSize: fontSize['body-sm'],
+              color: ctx.baseColor,
+              textAlign: alignStyle(i),
+            }}
+          >
+            {renderInline(cell.children, ctx)}
+          </Text>
+        ))}
+      </View>
+      {node.rows.map((row, ri) => (
+        <View
+          key={ri}
+          style={{
+            flexDirection: 'row',
+            borderBottomWidth: ri === node.rows.length - 1 ? 0 : 1,
+            borderBottomColor: ctx.borderColor,
+          }}
+        >
+          {row.map((cell, ci) => (
+            <Text
+              key={ci}
+              style={{
+                flex: 1,
+                padding: space[2],
+                fontSize: fontSize['body-sm'],
+                color: ctx.baseColor,
+                textAlign: alignStyle(ci),
+              }}
+            >
+              {renderInline(cell.children, ctx)}
+            </Text>
+          ))}
         </View>
       ))}
     </View>
   );
 }
 
-export const Markdown = memo(function Markdown({
-  text,
-  baseColor,
-  streaming = false,
-}: {
-  text: string;
-  baseColor: string;
-  streaming?: boolean;
-}) {
-  const blocks = parseMarkdown(text, streaming);
-  return <Blocks blocks={blocks} baseColor={baseColor} />;
+function renderInline(nodes: InlineNode[], ctx: RenderContext): ReactNode[] {
+  return nodes.map((node, i) => renderInlineNode(node, i, ctx));
+}
+
+function renderInlineNode(node: InlineNode, key: number, ctx: RenderContext): ReactNode {
+  switch (node.type) {
+    case 'text':
+      return <Text key={key}>{node.value}</Text>;
+    case 'break':
+      return <Text key={key}>{'\n'}</Text>;
+    case 'bold':
+      return (
+        <Text key={key} style={{ fontWeight: '700' }}>
+          {renderInline(node.children, ctx)}
+        </Text>
+      );
+    case 'italic':
+      return (
+        <Text key={key} style={{ fontStyle: 'italic' }}>
+          {renderInline(node.children, ctx)}
+        </Text>
+      );
+    case 'strike':
+      return (
+        <Text key={key} style={{ textDecorationLine: 'line-through' }}>
+          {renderInline(node.children, ctx)}
+        </Text>
+      );
+    case 'codespan':
+      return (
+        <Text
+          key={key}
+          style={{
+            fontFamily: fontFamily.mono,
+            fontSize: fontSize.code,
+            backgroundColor: ctx.codeBg,
+            color: ctx.codeFg,
+            paddingHorizontal: 4,
+            borderRadius: radius.sm,
+          }}
+        >
+          {node.value}
+        </Text>
+      );
+    case 'link':
+      return (
+        <Text
+          key={key}
+          style={{ color: ctx.linkColor, textDecorationLine: 'underline' }}
+          onPress={() => ctx.onLinkPress(node.href)}
+        >
+          {renderInline(node.children, ctx)}
+        </Text>
+      );
+    case 'image':
+      return (
+        <Image
+          key={key}
+          source={{ uri: node.src }}
+          accessibilityLabel={node.alt}
+          contentFit="contain"
+          cachePolicy="memory-disk"
+          style={{
+            width: ctx.imageMaxWidth,
+            height: ctx.imageMaxWidth * 0.6,
+            borderRadius: radius.md,
+            marginVertical: space[1],
+          }}
+        />
+      );
+  }
+}
+
+const styles = StyleSheet.create({
+  root: {
+    flexDirection: 'column',
+  },
 });
+
+/** Test/perf helper — drop the in-process parse cache. */
+export function _resetMarkdownCache() {
+  parseCache.clear();
+}

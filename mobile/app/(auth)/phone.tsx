@@ -1,157 +1,337 @@
 /**
- * S-02 · 전화번호 입력 (MTProto 로그인 1단계). Country code + national number → E.164,
- * terms consent, then request a login code via the relay's user-account auth. The code is
- * delivered in your Telegram app (MTProto), not SMS.
+ * S-02 · 전화번호 입력 (TECH §3.5)
+ * pen frame: TBD — design system tokens via @/ui/theme/*.
+ *
+ * Flow: 국가 코드 dropdown → national input → 약관 체크 → [다음] → sendCode → /(auth)/otp.
  */
-import { useState } from "react";
-import { View, Text, TextInput, Pressable, ScrollView, KeyboardAvoidingView, Platform } from "react-native";
-import { useRouter } from "expo-router";
+import { useMemo, useState } from "react";
+import {
+  Modal,
+  Pressable,
+  ScrollView,
+  Text,
+  TextInput,
+  View,
+} from "react-native";
+import { Stack, useRouter } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { useTheme } from "@/design/theme";
-import { fontSize, radius, space, touch } from "@/design/tokens";
+import { useTheme } from "@/ui/theme/ThemeProvider";
+import { fontSize, radius, space, touch } from "@/ui/theme/tokens";
 import { useAuthStore } from "@/application/stores/auth";
+import {
+  COUNTRIES,
+  type CountryEntry,
+  normalizeToE164,
+} from "@/domain/value-objects/phone";
 
-const COUNTRIES = [
-  { code: "+82", label: "🇰🇷 +82" },
-  { code: "+1", label: "🇺🇸 +1" },
-  { code: "+81", label: "🇯🇵 +81" },
-  { code: "+44", label: "🇬🇧 +44" },
-  { code: "+86", label: "🇨🇳 +86" },
-];
+function defaultCountry(): CountryEntry {
+  // TODO(BIZ-262): infer from device locale once libphonenumber-js lands.
+  return COUNTRIES.find((c) => c.code === "KR") ?? COUNTRIES[0]!;
+}
 
-function messageFor(error: string | null): string | null {
-  if (!error) return null;
-  if (error === "network") return "네트워크 오류입니다. 릴레이 연결을 확인해 주세요.";
-  if (error === "no_relay") return "릴레이가 설정되지 않았습니다 (app.json relayBase).";
-  if (error === "mtproto_disabled") return "서버에 MTProto 자격증명이 설정되지 않았습니다.";
-  if (error === "flood_wait") return "요청이 많습니다. 잠시 후 다시 시도해 주세요.";
-  return "코드 전송에 실패했습니다. 잠시 후 다시 시도해 주세요.";
+function localizedError(reason: ReturnType<typeof normalizeToE164> extends infer R
+  ? R extends { ok: false; reason: infer K }
+    ? K
+    : never
+  : never): string {
+  switch (reason) {
+    case "empty":
+      return "전화번호를 입력해 주세요.";
+    case "too_short":
+      return "번호가 너무 짧아요.";
+    case "too_long":
+      return "번호가 너무 길어요.";
+    case "invalid_format":
+    default:
+      return "전화번호 형식을 확인해 주세요.";
+  }
 }
 
 export default function PhoneScreen() {
   const { color } = useTheme();
   const router = useRouter();
-  const startLogin = useAuthStore((s) => s.startLogin);
+  const sendCode = useAuthStore((s) => s.sendCode);
+  const pending = useAuthStore((s) => s.pending);
+  const apiError = useAuthStore((s) => s.lastError);
+  const clearError = useAuthStore((s) => s.clearError);
 
-  const [cc, setCc] = useState("+82");
-  const [number, setNumber] = useState("");
-  const [agree, setAgree] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+  const [country, setCountry] = useState<CountryEntry>(() => defaultCountry());
+  const [national, setNational] = useState("");
+  const [agreed, setAgreed] = useState(false);
+  const [picker, setPicker] = useState(false);
+  const [inlineError, setInlineError] = useState<string | null>(null);
 
-  const digits = number.replace(/\D/g, "").replace(/^0/, "");
-  const e164 = `${cc}${digits}`;
-  const valid = digits.length >= 8 && agree;
+  const normalized = useMemo(
+    () => normalizeToE164(national, country.dialCode, country.trunkPrefix),
+    [national, country],
+  );
+  const canSubmit = normalized.ok && agreed && !pending;
 
   const handleNext = async () => {
-    if (!valid || busy) return;
-    setBusy(true);
-    setError(null);
-    const ok = await startLogin(e164);
-    setBusy(false);
-    if (ok) router.push("/code");
-    else setError(messageFor(useAuthStore.getState().error));
+    setInlineError(null);
+    clearError();
+    if (!normalized.ok) {
+      setInlineError(localizedError(normalized.reason));
+      return;
+    }
+    if (!agreed) {
+      setInlineError("약관에 동의해야 진행할 수 있어요.");
+      return;
+    }
+    const ok = await sendCode(normalized.e164);
+    if (ok) router.push("/(auth)/otp");
   };
 
+  const apiMessage =
+    apiError?.code === "rate_limited"
+      ? "요청이 너무 많아요. 잠시 후 다시 시도해 주세요."
+      : apiError?.code === "invalid_phone"
+        ? "이 번호로는 인증번호를 보낼 수 없어요."
+        : apiError?.code === "network"
+          ? "네트워크 연결을 확인해 주세요."
+          : apiError
+            ? "잠시 후 다시 시도해 주세요."
+            : null;
+
   return (
-    <SafeAreaView style={{ flex: 1, backgroundColor: color("surface") }}>
-      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
-        <ScrollView contentContainerStyle={{ padding: space[6], gap: space[5] }} keyboardShouldPersistTaps="handled">
-          <View style={{ gap: space[2], marginTop: space[6] }}>
-            <Text style={{ fontSize: 48 }}>💬</Text>
-            <Text style={{ color: color("text-primary"), fontSize: fontSize["title-xl"], fontWeight: "700" }}>전화번호 입력</Text>
-            <Text style={{ color: color("text-secondary"), fontSize: fontSize.body, lineHeight: 22 }}>
-              내 텔레그램 계정으로 로그인합니다. 인증 코드는 텔레그램 앱으로 전송돼요.
-            </Text>
-          </View>
-
-          <View style={{ flexDirection: "row", flexWrap: "wrap", gap: space[2] }}>
-            {COUNTRIES.map((c) => {
-              const selected = c.code === cc;
-              return (
-                <Pressable
-                  key={c.code}
-                  onPress={() => setCc(c.code)}
-                  accessibilityRole="radio"
-                  accessibilityState={{ selected }}
-                  style={{
-                    paddingHorizontal: space[3],
-                    paddingVertical: space[2],
-                    borderRadius: radius.full,
-                    borderWidth: 1,
-                    borderColor: selected ? color("primary") : color("border"),
-                    backgroundColor: selected ? color("trace-summary") : color("surface"),
-                  }}
-                >
-                  <Text style={{ color: color(selected ? "on-trace-summary" : "text-primary"), fontSize: fontSize["body-sm"] }}>
-                    {c.label}
-                  </Text>
-                </Pressable>
-              );
-            })}
-          </View>
-
-          <TextInput
-            testID="phoneInput"
-            value={number}
-            onChangeText={(t) => {
-              setNumber(t);
-              setError(null);
-            }}
-            placeholder="10-1234-5678"
-            placeholderTextColor={color("text-secondary")}
-            keyboardType="phone-pad"
-            autoFocus
+    <SafeAreaView style={{ flex: 1, backgroundColor: color("surface") }} edges={["bottom"]}>
+      <Stack.Screen options={{ headerShown: false }} />
+      <ScrollView
+        contentContainerStyle={{
+          flexGrow: 1,
+          padding: space[6],
+          gap: space[5],
+          justifyContent: "center",
+        }}
+        keyboardShouldPersistTaps="handled"
+      >
+        <View style={{ gap: space[2] }}>
+          <Text
             style={{
-              backgroundColor: color("surface-elevated"),
               color: color("text-primary"),
-              fontSize: fontSize["body-lg"],
-              paddingHorizontal: space[4],
-              paddingVertical: space[3],
-              borderRadius: radius.lg,
-              minHeight: touch.min,
+              fontSize: fontSize["title-xl"],
+              fontWeight: "700",
             }}
-          />
-
-          {error ? <Text style={{ color: color("error"), fontSize: fontSize["body-sm"] }}>{error}</Text> : null}
-
-          <Pressable
-            testID="agreeToggle"
-            onPress={() => setAgree((a) => !a)}
-            accessibilityRole="checkbox"
-            accessibilityState={{ checked: agree }}
-            style={{ flexDirection: "row", alignItems: "center", gap: space[2] }}
           >
-            <Text style={{ fontSize: fontSize["title-sm"], color: color(agree ? "primary" : "text-secondary") }}>
-              {agree ? "☑" : "☐"}
-            </Text>
-            <Text style={{ color: color("text-secondary"), fontSize: fontSize["body-sm"], flex: 1 }}>
-              이용약관 및 개인정보 처리방침에 동의합니다.
-            </Text>
-          </Pressable>
-        </ScrollView>
-
-        <View style={{ paddingHorizontal: space[6], paddingTop: space[3], paddingBottom: space[6] }}>
-          <Pressable
-            testID="nextButton"
-            onPress={handleNext}
-            disabled={!valid || busy}
-            accessibilityRole="button"
+            전화번호로 시작하기
+          </Text>
+          <Text
             style={{
-              backgroundColor: color(valid && !busy ? "primary" : "surface-elevated"),
-              borderRadius: radius.full,
-              paddingVertical: space[3],
+              color: color("text-secondary"),
+              fontSize: fontSize.body,
+              lineHeight: 22,
+            }}
+          >
+            인증번호를 SMS로 보내드려요. 한 번 가입하면 같은 번호로 자동 로그인됩니다.
+          </Text>
+        </View>
+
+        <View style={{ gap: space[2] }}>
+          <Text
+            style={{
+              color: color("text-secondary"),
+              fontSize: fontSize["body-sm"],
+              fontWeight: "600",
+            }}
+            accessibilityRole="text"
+          >
+            전화번호
+          </Text>
+          <View style={{ flexDirection: "row", gap: space[2] }}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="국가 코드 선택"
+              onPress={() => setPicker(true)}
+              style={{
+                paddingHorizontal: space[3],
+                paddingVertical: space[3],
+                borderRadius: radius.md,
+                borderWidth: 1,
+                borderColor: color("border-strong"),
+                minWidth: 90,
+                minHeight: touch.min,
+                justifyContent: "center",
+              }}
+            >
+              <Text style={{ color: color("text-primary"), fontWeight: "600" }}>
+                {country.dialCode}
+              </Text>
+              <Text style={{ color: color("text-secondary"), fontSize: fontSize.caption }}>
+                {country.code}
+              </Text>
+            </Pressable>
+
+            <TextInput
+              value={national}
+              onChangeText={(t) => {
+                setInlineError(null);
+                clearError();
+                setNational(t);
+              }}
+              placeholder={country.exampleNational}
+              placeholderTextColor={color("text-secondary")}
+              keyboardType="phone-pad"
+              autoComplete="tel"
+              textContentType="telephoneNumber"
+              importantForAutofill="yes"
+              style={{
+                flex: 1,
+                borderWidth: 1,
+                borderColor: color(inlineError ? "error" : "border-strong"),
+                borderRadius: radius.md,
+                paddingHorizontal: space[4],
+                paddingVertical: space[3],
+                color: color("text-primary"),
+                fontSize: fontSize.body,
+                minHeight: touch.min,
+              }}
+            />
+          </View>
+
+          {(inlineError || apiMessage) && (
+            <Text
+              role="alert"
+              style={{ color: color("error"), fontSize: fontSize["body-sm"] }}
+            >
+              {inlineError ?? apiMessage}
+            </Text>
+          )}
+        </View>
+
+        <Pressable
+          onPress={() => setAgreed((v) => !v)}
+          accessibilityRole="checkbox"
+          accessibilityState={{ checked: agreed }}
+          style={{
+            flexDirection: "row",
+            alignItems: "flex-start",
+            gap: space[3],
+            paddingVertical: space[2],
+          }}
+        >
+          <View
+            style={{
+              width: 22,
+              height: 22,
+              borderRadius: radius.sm,
+              borderWidth: 1.5,
+              borderColor: color(agreed ? "primary" : "border-strong"),
+              backgroundColor: color(agreed ? "primary" : "surface"),
               alignItems: "center",
               justifyContent: "center",
-              minHeight: touch.min,
+              marginTop: 2,
             }}
           >
-            <Text style={{ color: color(valid && !busy ? "on-primary" : "text-disabled"), fontSize: fontSize.body, fontWeight: "700" }}>
-              {busy ? "전송 중…" : "다음"}
+            {agreed && (
+              <Text style={{ color: color("on-primary"), fontWeight: "700", fontSize: 14 }}>
+                ✓
+              </Text>
+            )}
+          </View>
+          <Text
+            style={{
+              flex: 1,
+              color: color("text-primary"),
+              fontSize: fontSize["body-sm"],
+              lineHeight: 20,
+            }}
+          >
+            서비스 이용약관 · 개인정보 처리방침에 동의합니다.
+          </Text>
+        </Pressable>
+
+        <Pressable
+          onPress={handleNext}
+          disabled={!canSubmit}
+          accessibilityRole="button"
+          accessibilityState={{ disabled: !canSubmit, busy: pending }}
+          style={{
+            backgroundColor: color(canSubmit ? "primary" : "border-strong"),
+            paddingVertical: space[4],
+            borderRadius: radius.lg,
+            alignItems: "center",
+            minHeight: touch.min,
+            justifyContent: "center",
+            opacity: canSubmit ? 1 : 0.6,
+          }}
+        >
+          <Text
+            style={{
+              color: color("on-primary"),
+              fontSize: fontSize.body,
+              fontWeight: "700",
+            }}
+          >
+            {pending ? "전송 중..." : "다음"}
+          </Text>
+        </Pressable>
+      </ScrollView>
+
+      <Modal
+        visible={picker}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setPicker(false)}
+      >
+        <Pressable
+          onPress={() => setPicker(false)}
+          style={{ flex: 1, backgroundColor: "#0008", justifyContent: "flex-end" }}
+        >
+          <Pressable
+            onPress={() => undefined}
+            style={{
+              backgroundColor: color("surface"),
+              borderTopLeftRadius: radius.xl,
+              borderTopRightRadius: radius.xl,
+              paddingTop: space[4],
+              paddingBottom: space[6],
+              maxHeight: "75%",
+            }}
+          >
+            <Text
+              style={{
+                color: color("text-primary"),
+                fontSize: fontSize["title-md"],
+                fontWeight: "700",
+                paddingHorizontal: space[5],
+                paddingBottom: space[3],
+              }}
+            >
+              국가 선택
             </Text>
+            <ScrollView>
+              {COUNTRIES.map((c) => {
+                const selected = c.code === country.code;
+                return (
+                  <Pressable
+                    key={c.code}
+                    onPress={() => {
+                      setCountry(c);
+                      setPicker(false);
+                    }}
+                    style={{
+                      flexDirection: "row",
+                      alignItems: "center",
+                      paddingHorizontal: space[5],
+                      paddingVertical: space[4],
+                      gap: space[3],
+                      backgroundColor: color(selected ? "surface-elevated" : "surface"),
+                      minHeight: touch.min,
+                    }}
+                  >
+                    <Text style={{ color: color("text-primary"), flex: 1, fontSize: fontSize.body }}>
+                      {c.label}
+                    </Text>
+                    <Text style={{ color: color("text-secondary"), fontSize: fontSize.body }}>
+                      {c.dialCode}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </ScrollView>
           </Pressable>
-        </View>
-      </KeyboardAvoidingView>
+        </Pressable>
+      </Modal>
     </SafeAreaView>
   );
 }

@@ -1,137 +1,229 @@
 /**
- * Session store (single-user). Auth = Telegram **user-account** login (MTProto), driven
- * through the relay: phone → code → optional 2FA cloud password. The relay holds the
- * actual Telegram session; the app only keeps the relay deviceSecret (in relayClient) and
- * caches the logged-in tgUserId/phone for display + a fast ready-state on launch.
+ * useAuthStore — phone+SMS auth state machine (TECH §3.5, §4.2).
  *
- *   loading     — reading persisted state on splash
- *   onboarding  — not signed in → phone entry
- *   code        — code requested → code entry
- *   2fa         — cloud password required → 2FA entry
- *   ready       — signed in → main app
+ * State:
+ *   status: 'initializing' | 'guest' | 'awaiting_code' | 'auth'
+ *
+ * Actions:
+ *   bootstrap()                — cold-start: load SecureStore, refresh-or-clear, decide route.
+ *   sendCode(phoneE164)        — POST /v1/auth/send-code; sets request_id + expiry; status -> awaiting_code.
+ *   verifyCode(code)           — POST /v1/auth/verify-code; stores tokens; status -> auth.
+ *   resendCode(channel?)       — resends with the same phone number; refreshes request_id.
+ *   resetCodeFlow()            — return to phone entry (clears request_id + phone).
+ *   signOut()                  — POST /v1/auth/logout (best-effort); wipes SecureStore; status -> guest.
+ *   handleUnauthorized()       — 401 path: wipes tokens; status -> guest. Used by API layer.
+ *
+ * Token refresh:
+ *   bootstrap() will try /v1/auth/refresh if the stored access token is within
+ *   REFRESH_GRACE_MS of expiry (default 60s) and a refresh token exists; on failure it clears
+ *   and falls back to guest.
  */
-import { create } from "zustand";
-import { secureStore, SecureKeys } from "@/infrastructure/storage/secureStore";
-import { kv } from "@/infrastructure/storage/kv";
-import { relayClient } from "@/infrastructure/api/relayClient";
+import { create } from 'zustand';
+import { AuthApiError, authClient } from '@/infrastructure/api/auth-client';
+import { secureTokenStore } from '@/infrastructure/storage/secure-token-store';
 
-const INSTALL_FLAG = "install_flag_v3";
+export type AuthStatus = 'initializing' | 'guest' | 'awaiting_code' | 'auth';
 
-type SessionStatus = "loading" | "onboarding" | "code" | "2fa" | "ready";
+const REFRESH_GRACE_MS = 60_000;
 
-type SessionState = {
-  status: SessionStatus;
-  phone: string | null;
-  tgUserId: number | null;
-  error: string | null;
-  /** Whether the relay currently holds a live MTProto session (can send/receive). */
-  connected: boolean;
+export type AuthState = {
+  status: AuthStatus;
+  phoneE164: string | null;
+  requestId: string | null;
+  codeExpiresAt: number | null; // unix ms
+  tokenExpiresAt: number | null; // unix ms
+  lastError: AuthApiError | null;
+  pending: boolean;
 
-  hydrate: () => Promise<void>;
-  startLogin: (phone: string) => Promise<boolean>;
-  submitCode: (code: string) => Promise<boolean>;
-  submit2fa: (password: string) => Promise<boolean>;
-  /** Re-poll the relay session connectivity (for the chat "connected" indicator). */
-  refreshStatus: () => Promise<void>;
-  reset: () => Promise<void>;
+  bootstrap: () => Promise<void>;
+  sendCode: (phoneE164: string, channel?: 'sms' | 'voice') => Promise<boolean>;
+  verifyCode: (code: string) => Promise<boolean>;
+  resendCode: (channel?: 'sms' | 'voice') => Promise<boolean>;
+  resetCodeFlow: () => void;
+  signOut: () => Promise<void>;
+  handleUnauthorized: () => Promise<void>;
+  clearError: () => void;
 };
 
-export const useAuthStore = create<SessionState>((set, get) => ({
-  status: "loading",
-  phone: null,
-  tgUserId: null,
-  error: null,
-  connected: false,
+let inFlight: AbortController | null = null;
 
-  hydrate: async () => {
-    // iOS Keychain survives reinstall while kv does not — on a fresh install purge any
-    // orphaned credentials so we always start at onboarding.
-    const installed = await kv.get<boolean>(INSTALL_FLAG);
-    if (!installed) {
-      await secureStore.remove(SecureKeys.tgUserId);
-      await secureStore.remove(SecureKeys.phone);
-      await secureStore.remove(SecureKeys.deviceSecret);
-      await kv.set(INSTALL_FLAG, true);
-      set({ status: "onboarding" });
+function newController(): AbortController {
+  inFlight?.abort();
+  inFlight = new AbortController();
+  return inFlight;
+}
+
+function nowMs(): number {
+  return Date.now();
+}
+
+export const useAuthStore = create<AuthState>((set, get) => ({
+  status: 'initializing',
+  phoneE164: null,
+  requestId: null,
+  codeExpiresAt: null,
+  tokenExpiresAt: null,
+  lastError: null,
+  pending: false,
+
+  clearError: () => set({ lastError: null }),
+
+  resetCodeFlow: () => {
+    inFlight?.abort();
+    inFlight = null;
+    set({
+      status: 'guest',
+      requestId: null,
+      codeExpiresAt: null,
+      lastError: null,
+      pending: false,
+    });
+  },
+
+  bootstrap: async () => {
+    set({ status: 'initializing', lastError: null });
+    const snap = await secureTokenStore.load();
+    if (!snap) {
+      set({ status: 'guest', tokenExpiresAt: null, phoneE164: null });
       return;
     }
 
-    const cachedId = await secureStore.get(SecureKeys.tgUserId);
-    const phone = await secureStore.get(SecureKeys.phone);
-    if (!cachedId) {
-      set({ status: "onboarding" });
+    const aboutToExpire = snap.expiresAt - nowMs() < REFRESH_GRACE_MS;
+    if (aboutToExpire && snap.refreshToken) {
+      try {
+        const refreshed = await authClient.refresh({ refreshToken: snap.refreshToken });
+        const expiresAt = nowMs() + refreshed.expiresIn * 1000;
+        await secureTokenStore.save({
+          accessToken: refreshed.accessToken,
+          refreshToken: refreshed.refreshToken ?? snap.refreshToken,
+          expiresAt,
+          phoneNumber: snap.phoneNumber,
+        });
+        set({
+          status: 'auth',
+          phoneE164: snap.phoneNumber,
+          tokenExpiresAt: expiresAt,
+          requestId: null,
+          codeExpiresAt: null,
+        });
+        return;
+      } catch {
+        await secureTokenStore.clear();
+        set({ status: 'guest', tokenExpiresAt: null, phoneE164: null });
+        return;
+      }
+    }
+
+    if (snap.expiresAt > nowMs()) {
+      set({
+        status: 'auth',
+        phoneE164: snap.phoneNumber,
+        tokenExpiresAt: snap.expiresAt,
+        requestId: null,
+        codeExpiresAt: null,
+      });
       return;
     }
-    // Optimistically ready from cache, then confirm the relay still holds an active session.
-    set({ status: "ready", tgUserId: Number(cachedId), phone });
-    const remote = await relayClient.authStatus();
-    if (remote && remote.status !== "active") {
-      await secureStore.remove(SecureKeys.tgUserId);
-      set({ status: "onboarding", tgUserId: null, connected: false });
-    } else {
-      set({ connected: !!remote?.connected });
-    }
+
+    // Expired and no refresh token usable.
+    await secureTokenStore.clear();
+    set({ status: 'guest', tokenExpiresAt: null, phoneE164: null });
   },
 
-  refreshStatus: async () => {
-    const remote = await relayClient.authStatus();
-    // null = relay unreachable → treat as not connected. Don't sign the user out on a
-    // transient failure; only an explicit non-active status downgrades onboarding.
-    set({ connected: !!remote?.connected });
-    if (remote && remote.status !== "active" && get().status === "ready") {
-      await secureStore.remove(SecureKeys.tgUserId);
-      set({ status: "onboarding", tgUserId: null, connected: false });
-    }
-  },
-
-  startLogin: async (phone) => {
-    set({ error: null });
-    const r = await relayClient.authStart(phone.trim());
-    if (!r.ok) {
-      set({ error: r.error });
-      return false;
-    }
-    await secureStore.set(SecureKeys.phone, phone.trim());
-    set({ status: "code", phone: phone.trim() });
-    return true;
-  },
-
-  submitCode: async (code) => {
-    set({ error: null });
-    const r = await relayClient.authCode(code.trim());
-    if (!r.ok) {
-      set({ error: r.error });
-      return false;
-    }
-    if (r.needs2fa) {
-      set({ status: "2fa" });
+  sendCode: async (phoneE164, channel = 'sms') => {
+    const ctrl = newController();
+    set({ pending: true, lastError: null });
+    try {
+      const res = await authClient.sendCode({ phoneNumber: phoneE164, channel, signal: ctrl.signal });
+      set({
+        status: 'awaiting_code',
+        phoneE164,
+        requestId: res.requestId,
+        codeExpiresAt: nowMs() + res.expiresIn * 1000,
+        pending: false,
+        lastError: null,
+      });
       return true;
-    }
-    if (r.signedIn && r.tgUserId != null) {
-      await secureStore.set(SecureKeys.tgUserId, String(r.tgUserId));
-      set({ status: "ready", tgUserId: r.tgUserId, connected: true });
-      return true;
-    }
-    set({ error: "unknown" });
-    return false;
-  },
-
-  submit2fa: async (password) => {
-    set({ error: null });
-    const r = await relayClient.auth2fa(password);
-    if (!r.ok || !r.signedIn || r.tgUserId == null) {
-      set({ error: r.ok ? "unknown" : r.error });
+    } catch (err) {
+      const error = err instanceof AuthApiError ? err : new AuthApiError('unknown', String(err));
+      set({ pending: false, lastError: error });
       return false;
     }
-    await secureStore.set(SecureKeys.tgUserId, String(r.tgUserId));
-    set({ status: "ready", tgUserId: r.tgUserId, connected: true });
-    return true;
   },
 
-  reset: async () => {
-    await relayClient.authLogout();
-    await secureStore.remove(SecureKeys.tgUserId);
-    await secureStore.remove(SecureKeys.phone);
-    set({ status: "onboarding", phone: null, tgUserId: null, error: null, connected: false });
+  resendCode: async (channel = 'sms') => {
+    const { phoneE164 } = get();
+    if (!phoneE164) return false;
+    return get().sendCode(phoneE164, channel);
+  },
+
+  verifyCode: async (code) => {
+    const { requestId, phoneE164 } = get();
+    if (!requestId) {
+      set({ lastError: new AuthApiError('request_not_found', 'no active code request') });
+      return false;
+    }
+    const ctrl = newController();
+    set({ pending: true, lastError: null });
+    try {
+      const res = await authClient.verifyCode({ requestId, code, signal: ctrl.signal });
+      const expiresAt = nowMs() + res.expiresIn * 1000;
+      await secureTokenStore.save({
+        accessToken: res.accessToken,
+        refreshToken: res.refreshToken,
+        expiresAt,
+        phoneNumber: phoneE164,
+      });
+      set({
+        status: 'auth',
+        tokenExpiresAt: expiresAt,
+        requestId: null,
+        codeExpiresAt: null,
+        pending: false,
+        lastError: null,
+      });
+      return true;
+    } catch (err) {
+      const error = err instanceof AuthApiError ? err : new AuthApiError('unknown', String(err));
+      set({ pending: false, lastError: error });
+      return false;
+    }
+  },
+
+  signOut: async () => {
+    const snap = await secureTokenStore.load();
+    if (snap?.accessToken) {
+      try {
+        await authClient.logout({
+          accessToken: snap.accessToken,
+          refreshToken: snap.refreshToken ?? undefined,
+        });
+      } catch {
+        // Best-effort: still wipe locally on transport failure.
+      }
+    }
+    await secureTokenStore.clear();
+    set({
+      status: 'guest',
+      phoneE164: null,
+      requestId: null,
+      codeExpiresAt: null,
+      tokenExpiresAt: null,
+      lastError: null,
+      pending: false,
+    });
+  },
+
+  handleUnauthorized: async () => {
+    await secureTokenStore.clear();
+    set({
+      status: 'guest',
+      phoneE164: null,
+      requestId: null,
+      codeExpiresAt: null,
+      tokenExpiresAt: null,
+      lastError: new AuthApiError('unauthorized', 'session expired'),
+      pending: false,
+    });
   },
 }));

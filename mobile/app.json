@@ -6,13 +6,9 @@
     "orientation": "portrait",
     "scheme": "agentclient",
     "userInterfaceStyle": "automatic",
-    "newArchEnabled": false,
     "ios": {
       "supportsTablet": false,
-      "bundleIdentifier": "dev.simplist.agentclient.mockup",
-      "infoPlist": {
-        "UIBackgroundModes": ["remote-notification"]
-      }
+      "bundleIdentifier": "dev.simplist.agentclient.mockup"
     },
     "android": {
       "package": "dev.simplist.agentclient.mockup",
@@ -27,15 +23,10 @@
     "plugins": [
       "expo-router",
       "expo-secure-store",
-      "expo-notifications"
+      "expo-image"
     ],
-    "extra": {
-      "gateway": "https://api.telegram.org",
-      "apiBase": null,
-      "relayBase": "https://telegram-relay.2prostream.com"
-    },
     "experiments": {
-      "typedRoutes": false
+      "typedRoutes": true
     }
   }
 }
