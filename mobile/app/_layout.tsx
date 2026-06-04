@@ -9,6 +9,7 @@ import { useAuthStore } from '@/application/stores/auth';
 import { computeProtectedRoute } from '@/ui/navigation/protected-route';
 import { ThemeProvider, useTheme } from '@/ui/theme/ThemeProvider';
 
+import { initChatRuntime } from './_runtime/chat';
 import { initNetworkRuntime } from './_runtime/network';
 
 function useProtectedRoute() {
@@ -41,6 +42,7 @@ export default function RootLayout() {
   const bootstrap = useAuthStore((s) => s.bootstrap);
   useEffect(() => {
     void bootstrap();
+    initChatRuntime();
     initNetworkRuntime();
   }, [bootstrap]);
 

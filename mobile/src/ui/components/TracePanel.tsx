@@ -36,16 +36,17 @@ function maskNode(node: TraceNode): Record<string, unknown> {
 
 export function TracePanel({ messageId, streaming }: { messageId: string; streaming: boolean }) {
   const { color } = useTheme();
-  const trace = useTraceStore((s) => s.byMessage[messageId]);
-  const expanded = useTraceStore((s) => s.expanded[messageId] ?? false);
-  const toggle = useTraceStore((s) => s.toggle);
-  const [detail, setDetail] = useState<TraceNode | null>(null);
-
-  if (!trace || trace.nodes.length === 0) return null;
-
-  const thinkingSteps = trace.nodes.filter((n) => n.kind === "thinking").length;
-  const toolCalls = trace.nodes.filter((n) => n.kind === "tool_call").length;
-  const elapsedMs = trace.nodes.reduce((s, n) => s + (n.latencyMs ?? 0), 0);
+	  const trace = useTraceStore((s) => s.byMessage[messageId]);
+	  const expanded = useTraceStore((s) => s.expanded[messageId] ?? false);
+	  const toggle = useTraceStore((s) => s.toggle);
+	  const [detail, setDetail] = useState<TraceNode | null>(null);
+	  const nodes = trace ?? [];
+	
+	  if (nodes.length === 0) return null;
+	
+	  const thinkingSteps = nodes.filter((n) => n.kind === "thinking").length;
+	  const toolCalls = nodes.filter((n) => n.kind === "tool_call").length;
+	  const elapsedMs = nodes.reduce((s, n) => s + (n.latencyMs ?? 0), 0);
 
   return (
     <View style={{ marginTop: space[2], alignSelf: "flex-start", maxWidth: "100%" }}>
@@ -84,7 +85,7 @@ export function TracePanel({ messageId, streaming }: { messageId: string; stream
             gap: space[2],
           }}
         >
-          {trace.nodes.map((node) => (
+	          {nodes.map((node) => (
             <Pressable
               key={node.seq}
               onPress={() => setDetail(node)}

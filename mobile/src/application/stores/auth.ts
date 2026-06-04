@@ -20,9 +20,12 @@
  */
 import { create } from 'zustand';
 import { AuthApiError, authClient } from '@/infrastructure/api/auth-client';
+import { config } from '@/infrastructure/config';
+import { relayClient } from '@/infrastructure/api/relayClient';
+import { secureStore, SecureKeys } from '@/infrastructure/storage/secureStore';
 import { secureTokenStore } from '@/infrastructure/storage/secure-token-store';
 
-export type AuthStatus = 'initializing' | 'guest' | 'awaiting_code' | 'auth';
+export type AuthStatus = 'initializing' | 'guest' | 'awaiting_code' | 'awaiting_2fa' | 'auth';
 
 const REFRESH_GRACE_MS = 60_000;
 
@@ -38,6 +41,7 @@ export type AuthState = {
   bootstrap: () => Promise<void>;
   sendCode: (phoneE164: string, channel?: 'sms' | 'voice') => Promise<boolean>;
   verifyCode: (code: string) => Promise<boolean>;
+  verify2fa: (password: string) => Promise<boolean>;
   resendCode: (channel?: 'sms' | 'voice') => Promise<boolean>;
   resetCodeFlow: () => void;
   signOut: () => Promise<void>;
@@ -55,6 +59,44 @@ function newController(): AbortController {
 
 function nowMs(): number {
   return Date.now();
+}
+
+function relayAuthEnabled(): boolean {
+  return config.relayBase != null;
+}
+
+function relayError(code: string): AuthApiError {
+  if (code === 'flood_wait') return new AuthApiError('rate_limited', '요청이 너무 많아요. 잠시 후 다시 시도해 주세요.');
+  if (code === 'invalid_code') return new AuthApiError('invalid_code', '코드가 올바르지 않습니다.');
+  if (code === 'expired') return new AuthApiError('code_expired', '코드가 만료되었습니다.');
+  if (code === 'invalid_password') return new AuthApiError('invalid_password', '비밀번호가 올바르지 않습니다.');
+  if (code === 'network') return new AuthApiError('network', 'relay에 연결할 수 없습니다.');
+  if (code === 'no_relay') return new AuthApiError('network', 'relay 주소가 설정되지 않았습니다.');
+  if (code === 'mtproto_disabled') return new AuthApiError('server', 'relay의 Telegram 로그인이 비활성화되어 있습니다.');
+  return new AuthApiError('unknown', code);
+}
+
+async function saveRelaySession(phoneE164: string | null, tgUserId?: number): Promise<number> {
+  const expiresAt = nowMs() + 365 * 24 * 60 * 60 * 1000;
+  if (phoneE164) await secureStore.set(SecureKeys.phone, phoneE164);
+  if (tgUserId != null) await secureStore.set(SecureKeys.tgUserId, String(tgUserId));
+  await secureTokenStore.save({
+    accessToken: `relay:${tgUserId ?? 'active'}`,
+    refreshToken: null,
+    expiresAt,
+    phoneNumber: phoneE164,
+  });
+  return expiresAt;
+}
+
+async function clearRelaySession(): Promise<void> {
+  await Promise.all([
+    secureStore.remove(SecureKeys.tgUserId),
+    secureStore.remove(SecureKeys.phone),
+    secureStore.remove(SecureKeys.deviceSecret),
+    secureStore.remove(SecureKeys.deviceId),
+    secureTokenStore.clear(),
+  ]);
 }
 
 export const useAuthStore = create<AuthState>((set, get) => ({
@@ -82,6 +124,26 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   bootstrap: async () => {
     set({ status: 'initializing', lastError: null });
+    if (relayAuthEnabled()) {
+      const relayStatus = await relayClient.authStatus();
+      if (relayStatus?.status === 'active' || relayStatus?.connected) {
+        const phone = await secureStore.get(SecureKeys.phone);
+        const expiresAt = await saveRelaySession(phone, relayStatus.tgUserId);
+        set({
+          status: 'auth',
+          phoneE164: phone,
+          tokenExpiresAt: expiresAt,
+          requestId: null,
+          codeExpiresAt: null,
+          lastError: null,
+          pending: false,
+        });
+        return;
+      }
+      set({ status: 'guest', tokenExpiresAt: null, phoneE164: null, pending: false });
+      return;
+    }
+
     const snap = await secureTokenStore.load();
     if (!snap) {
       set({ status: 'guest', tokenExpiresAt: null, phoneE164: null });
@@ -134,6 +196,20 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     const ctrl = newController();
     set({ pending: true, lastError: null });
     try {
+      if (relayAuthEnabled()) {
+        const res = await relayClient.authStart(phoneE164);
+        if (!res.ok) throw relayError(res.error);
+        set({
+          status: 'awaiting_code',
+          phoneE164,
+          requestId: 'relay',
+          codeExpiresAt: nowMs() + 300 * 1000,
+          pending: false,
+          lastError: null,
+        });
+        return true;
+      }
+
       const res = await authClient.sendCode({ phoneNumber: phoneE164, channel, signal: ctrl.signal });
       set({
         status: 'awaiting_code',
@@ -166,6 +242,29 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     const ctrl = newController();
     set({ pending: true, lastError: null });
     try {
+      if (relayAuthEnabled()) {
+        const res = await relayClient.authCode(code);
+        if (!res.ok) throw relayError(res.error);
+        if (res.needs2fa) {
+          set({
+            status: 'awaiting_2fa',
+            pending: false,
+            lastError: null,
+          });
+          return true;
+        }
+        const expiresAt = await saveRelaySession(phoneE164, res.tgUserId);
+        set({
+          status: 'auth',
+          tokenExpiresAt: expiresAt,
+          requestId: null,
+          codeExpiresAt: null,
+          pending: false,
+          lastError: null,
+        });
+        return true;
+      }
+
       const res = await authClient.verifyCode({ requestId, code, signal: ctrl.signal });
       const expiresAt = nowMs() + res.expiresIn * 1000;
       await secureTokenStore.save({
@@ -190,7 +289,50 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     }
   },
 
+  verify2fa: async (password) => {
+    const { phoneE164 } = get();
+    set({ pending: true, lastError: null });
+    try {
+      if (!relayAuthEnabled()) throw new AuthApiError('server', '2FA is only available with relay auth');
+      const res = await relayClient.auth2fa(password);
+      if (!res.ok) throw relayError(res.error);
+      const expiresAt = await saveRelaySession(phoneE164, res.tgUserId);
+      set({
+        status: 'auth',
+        tokenExpiresAt: expiresAt,
+        requestId: null,
+        codeExpiresAt: null,
+        pending: false,
+        lastError: null,
+      });
+      return true;
+    } catch (err) {
+      const error = err instanceof AuthApiError ? err : new AuthApiError('unknown', String(err));
+      set({ pending: false, lastError: error });
+      return false;
+    }
+  },
+
   signOut: async () => {
+    if (relayAuthEnabled()) {
+      try {
+        await relayClient.authLogout();
+      } catch {
+        // Best-effort: still wipe locally on transport failure.
+      }
+      await clearRelaySession();
+      set({
+        status: 'guest',
+        phoneE164: null,
+        requestId: null,
+        codeExpiresAt: null,
+        tokenExpiresAt: null,
+        lastError: null,
+        pending: false,
+      });
+      return;
+    }
+
     const snap = await secureTokenStore.load();
     if (snap?.accessToken) {
       try {
@@ -215,7 +357,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
 
   handleUnauthorized: async () => {
-    await secureTokenStore.clear();
+    if (relayAuthEnabled()) await clearRelaySession();
+    else await secureTokenStore.clear();
     set({
       status: 'guest',
       phoneE164: null,

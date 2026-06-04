@@ -28,13 +28,16 @@ function nameFromUri(uri: string, fallback: string): string {
 export async function pickDocument(): Promise<PickedAttachment[]> {
   const res = await DocumentPicker.getDocumentAsync({ type: "*/*", copyToCacheDirectory: true, multiple: true });
   if (res.canceled || !res.assets?.length) return [];
-  return res.assets.map((a) => ({
-    kind: "document" as const,
-    uri: a.uri,
-    name: a.name ?? nameFromUri(a.uri, "file"),
-    mime: a.mimeType ?? "application/octet-stream",
-    size: a.size ?? undefined,
-  }));
+  return res.assets.map((a) => {
+    const item: PickedAttachment = {
+      kind: "document",
+      uri: a.uri,
+      name: a.name ?? nameFromUri(a.uri, "file"),
+      mime: a.mimeType ?? "application/octet-stream",
+    };
+    if (a.size !== undefined) item.size = a.size;
+    return item;
+  });
 }
 
 /** Photos/videos from the library (multi-select). */
@@ -62,14 +65,15 @@ export async function captureCamera(): Promise<PickedAttachment | null> {
 
 function mapImageAsset(a: ImagePicker.ImagePickerAsset): PickedAttachment {
   const isVideo = a.type === "video";
-  return {
+  const item: PickedAttachment = {
     kind: isVideo ? "video" : "image",
     uri: a.uri,
     name: a.fileName ?? nameFromUri(a.uri, isVideo ? "video.mp4" : "photo.jpg"),
     mime: a.mimeType ?? (isVideo ? "video/mp4" : "image/jpeg"),
-    size: a.fileSize ?? undefined,
-    durationMs: a.duration ?? undefined,
   };
+  if (a.fileSize !== undefined) item.size = a.fileSize;
+  if (a.duration != null) item.durationMs = a.duration;
+  return item;
 }
 
 /** Current location → a Google Maps URL (sent as a normal message → link preview card). */
@@ -90,7 +94,7 @@ export async function getLocationUrl(): Promise<string | null> {
 
 /** Read a local file as base64 for upload. */
 export function readBase64(uri: string): Promise<string> {
-  return FileSystem.readAsStringAsync(uri, { encoding: FileSystem.EncodingType.Base64 });
+  return FileSystem.readAsStringAsync(uri, { encoding: "base64" });
 }
 
 // ─── Voice recording ─────────────────────────────────────────────────────────
@@ -121,13 +125,15 @@ export async function stopRecording(): Promise<PickedAttachment | null> {
   const uri = rec.getURI();
   if (!uri) return null;
   const status = await rec.getStatusAsync().catch(() => null);
-  return {
+  const item: PickedAttachment = {
     kind: "voice",
     uri,
     name: "voice.m4a",
     mime: "audio/m4a",
-    durationMs: status && "durationMillis" in status ? (status.durationMillis ?? undefined) : undefined,
   };
+  const durationMs = status && "durationMillis" in status ? status.durationMillis : undefined;
+  if (durationMs !== undefined) item.durationMs = durationMs;
+  return item;
 }
 
 export async function cancelRecording(): Promise<void> {

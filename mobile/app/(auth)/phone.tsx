@@ -2,7 +2,7 @@
  * S-02 · 전화번호 입력 (TECH §3.5)
  * pen frame: TBD — design system tokens via @/ui/theme/*.
  *
- * Flow: 국가 코드 dropdown → national input → 약관 체크 → [다음] → sendCode → /(auth)/otp.
+ * Flow: 국가 코드 dropdown → national input → 약관 체크 → [다음] → relay authStart → /(auth)/otp.
  */
 import { useMemo, useState } from "react";
 import {
@@ -88,9 +88,9 @@ export default function PhoneScreen() {
       : apiError?.code === "invalid_phone"
         ? "이 번호로는 인증번호를 보낼 수 없어요."
         : apiError?.code === "network"
-          ? "네트워크 연결을 확인해 주세요."
+          ? apiError.message || "네트워크 연결을 확인해 주세요."
           : apiError
-            ? "잠시 후 다시 시도해 주세요."
+            ? apiError.message || "잠시 후 다시 시도해 주세요."
             : null;
 
   return (
@@ -122,7 +122,7 @@ export default function PhoneScreen() {
               lineHeight: 22,
             }}
           >
-            인증번호를 SMS로 보내드려요. 한 번 가입하면 같은 번호로 자동 로그인됩니다.
+            Telegram 앱으로 로그인 코드를 보내드려요. 한 번 로그인하면 같은 번호로 자동 연결됩니다.
           </Text>
         </View>
 

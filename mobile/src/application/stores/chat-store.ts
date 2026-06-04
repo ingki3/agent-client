@@ -4,6 +4,7 @@ import type { BuddyId } from '@/domain/entities/Buddy';
 import type {
   ClientMessageId,
   Message,
+  MessageTts,
   MessageStatus,
   ServerMessageId,
 } from '@/domain/entities/Message';
@@ -17,6 +18,7 @@ interface ChatState {
   appendMessage: (msg: Message) => void;
   setStatus: (clientMessageId: ClientMessageId, status: MessageStatus) => void;
   setServerId: (clientMessageId: ClientMessageId, serverId: ServerMessageId) => void;
+  setMessageTts: (clientMessageId: ClientMessageId, tts: MessageTts) => void;
   appendDelta: (clientMessageId: ClientMessageId, chunk: string) => void;
   reset: () => void;
 }
@@ -59,6 +61,14 @@ export const useChatStore = create<ChatState>((set) => ({
       if (!existing) return s;
       return {
         messages: { ...s.messages, [clientMessageId]: { ...existing, id: serverId } },
+      };
+    }),
+  setMessageTts: (clientMessageId, tts) =>
+    set((s) => {
+      const existing = s.messages[clientMessageId];
+      if (!existing) return s;
+      return {
+        messages: { ...s.messages, [clientMessageId]: { ...existing, tts } },
       };
     }),
   appendDelta: (clientMessageId, chunk) =>

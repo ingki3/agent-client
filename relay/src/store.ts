@@ -53,14 +53,27 @@ db.exec(`
   -- Resolved peers (the bots/chats the user talks to). peer_id mirrors a bot_id on /pull.
   CREATE TABLE IF NOT EXISTS peers (
     device_id TEXT NOT NULL,
+    owner_tg_user_id INTEGER,
     peer_id INTEGER NOT NULL,
     username TEXT,
     title TEXT,
     access_hash TEXT,                       -- int64 as string, for InputPeerUser
+    created_at INTEGER NOT NULL DEFAULT 0,
+    last_used_at INTEGER NOT NULL DEFAULT 0,
     local_seq INTEGER NOT NULL DEFAULT 0,   -- monotonic cursor; stands in for getUpdates offset
     PRIMARY KEY (device_id, peer_id)
   );
 `);
+
+function ensureColumn(table: string, column: string, ddl: string) {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+  if (!cols.some((c) => c.name === column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
+}
+
+ensureColumn("peers", "owner_tg_user_id", "owner_tg_user_id INTEGER");
+ensureColumn("peers", "created_at", "created_at INTEGER NOT NULL DEFAULT 0");
+ensureColumn("peers", "last_used_at", "last_used_at INTEGER NOT NULL DEFAULT 0");
+db.exec("CREATE INDEX IF NOT EXISTS idx_peers_owner ON peers(owner_tg_user_id, peer_id)");
 
 export type DeviceRow = {
   device_id: string;
@@ -85,10 +98,13 @@ export type UserSessionRow = {
 };
 export type PeerRow = {
   device_id: string;
+  owner_tg_user_id: number | null;
   peer_id: number;
   username: string | null;
   title: string | null;
   access_hash: string | null;
+  created_at: number;
+  last_used_at: number;
   local_seq: number;
 };
 
@@ -266,25 +282,88 @@ export const store = {
 
   // ─── Peers (resolved bots/chats the user talks to) ────────────────────────
   upsertPeer(p: { deviceId: string; peerId: number; username?: string; title?: string; accessHash?: string }) {
+    const session = store.getUserSession(p.deviceId);
+    const now = Date.now();
     db.prepare(
-      `INSERT INTO peers (device_id, peer_id, username, title, access_hash, local_seq)
-       VALUES (@dev, @peer, @user, @title, @hash, 0)
+      `INSERT INTO peers (device_id, owner_tg_user_id, peer_id, username, title, access_hash, created_at, last_used_at, local_seq)
+       VALUES (@dev, @owner, @peer, @user, @title, @hash, @now, @now, 0)
        ON CONFLICT(device_id, peer_id) DO UPDATE SET
+         owner_tg_user_id=COALESCE(@owner, owner_tg_user_id),
          username=COALESCE(@user, username), title=COALESCE(@title, title),
-         access_hash=COALESCE(@hash, access_hash)`,
+         access_hash=COALESCE(@hash, access_hash), last_used_at=@now`,
     ).run({
       dev: p.deviceId,
+      owner: session?.tg_user_id ?? null,
       peer: p.peerId,
       user: p.username ?? null,
       title: p.title ?? null,
       hash: p.accessHash ?? null,
+      now,
     });
+  },
+
+  listAccountPeers(deviceId: string): PeerRow[] {
+    const session = store.getUserSession(deviceId);
+    if (!session?.tg_user_id) {
+      return db
+        .prepare("SELECT * FROM peers WHERE device_id=? ORDER BY last_used_at DESC, created_at DESC")
+        .all(deviceId) as PeerRow[];
+    }
+    return db
+      .prepare(
+        `SELECT *
+         FROM (
+           SELECT
+             p.*,
+             ROW_NUMBER() OVER (
+               PARTITION BY p.peer_id
+               ORDER BY p.last_used_at DESC, p.created_at DESC
+             ) AS rn
+           FROM peers p
+           LEFT JOIN user_sessions s ON s.device_id = p.device_id
+           WHERE p.owner_tg_user_id = @tg OR s.tg_user_id = @tg
+         )
+         WHERE rn = 1
+         ORDER BY last_used_at DESC, created_at DESC`,
+      )
+      .all({ tg: session.tg_user_id }) as PeerRow[];
+  },
+
+  removeAccountPeer(deviceId: string, peerId: number) {
+    const session = store.getUserSession(deviceId);
+    if (!session?.tg_user_id) {
+      db.prepare("DELETE FROM peers WHERE device_id=? AND peer_id=?").run(deviceId, peerId);
+      return;
+    }
+    db.prepare(
+      `DELETE FROM peers
+       WHERE peer_id=@peer
+         AND (owner_tg_user_id=@tg OR device_id IN (SELECT device_id FROM user_sessions WHERE tg_user_id=@tg))`,
+    ).run({ peer: peerId, tg: session.tg_user_id });
   },
 
   getPeer(deviceId: string, peerId: number): PeerRow | undefined {
     return db.prepare("SELECT * FROM peers WHERE device_id=? AND peer_id=?").get(deviceId, peerId) as
       | PeerRow
       | undefined;
+  },
+
+  getAccountPeer(deviceId: string, peerId: number): PeerRow | undefined {
+    const direct = store.getPeer(deviceId, peerId);
+    if (direct) return direct;
+    const session = store.getUserSession(deviceId);
+    if (!session?.tg_user_id) return undefined;
+    return db
+      .prepare(
+        `SELECT p.*
+         FROM peers p
+         LEFT JOIN user_sessions s ON s.device_id = p.device_id
+         WHERE p.peer_id = @peer
+           AND (p.owner_tg_user_id = @tg OR s.tg_user_id = @tg)
+         ORDER BY p.last_used_at DESC, p.created_at DESC
+         LIMIT 1`,
+      )
+      .get({ peer: peerId, tg: session.tg_user_id }) as PeerRow | undefined;
   },
 
   /** Atomically bump and return the next monotonic cursor for a peer's buffered updates. */

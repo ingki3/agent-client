@@ -311,6 +311,59 @@ function extractInlineKeyboard(markup: any): InlineKeyboard | undefined {
   return rows.length ? { rows } : undefined;
 }
 
+function updateFromTelegramMessage(params: {
+  deviceId: string;
+  peer: { peer_id: number; title: string | null };
+  msg: any;
+  edited?: boolean;
+}): TgUpdate | null {
+  const { deviceId, peer, msg } = params;
+  const outgoing = !!msg.out;
+  const peerId = peer.peer_id;
+  const rawText: string = entitiesToMarkdown(msg.message ?? "", msg.entities as MdEntity[] | undefined);
+  const visibleText = !outgoing ? cleanAgentVisibleText(rawText) : rawText;
+  const extracted = !outgoing ? extractAgentPayloads(visibleText) : { text: visibleText, payloads: [] };
+  const text = extracted.text;
+  const mediaInfo = classifyMedia(msg);
+  const inlineKeyboard = extractInlineKeyboard(msg.replyMarkup);
+  if (!text && !mediaInfo && extracted.payloads.length === 0 && !inlineKeyboard) return null;
+
+  const messageId = Number(msg.id);
+  let preview: LinkPreview | undefined;
+  const wp = (msg as { media?: { webpage?: any } }).media?.webpage;
+  if (wp && wp.className === "WebPage" && wp.url) {
+    preview = {
+      url: String(wp.url),
+      title: wp.title ? String(wp.title) : undefined,
+      description: wp.description ? String(wp.description) : undefined,
+      siteName: wp.siteName ? String(wp.siteName) : undefined,
+      image: wp.photo
+        ? `/media?deviceId=${encodeURIComponent(deviceId)}&peer=${peerId}&msg=${messageId}`
+        : undefined,
+    };
+  }
+  const media = mediaInfo
+    ? { ...mediaInfo, url: `/media?deviceId=${encodeURIComponent(deviceId)}&peer=${peerId}&msg=${messageId}` }
+    : undefined;
+  const baseUpdateId = messageId * 1000;
+  const eventUpdateId = params.edited ? nextEditUpdateId(deviceId, peerId, messageId) : baseUpdateId;
+  return {
+    update_id: eventUpdateId,
+    message: {
+      message_id: messageId,
+      date: Number(msg.date),
+      text,
+      chat: { id: peerId, type: "private" },
+      from: { id: peerId, is_bot: !outgoing, first_name: peer.title ?? "" },
+      outgoing,
+      ...(preview ? { preview } : {}),
+      ...(media ? { media } : {}),
+      ...(extracted.payloads.length ? { agent_payload: extracted.payloads[0], agent_payloads: extracted.payloads } : {}),
+      inline_keyboard: inlineKeyboard ?? null,
+    },
+  };
+}
+
 /** Classify a message's media (photo/document) so the app can render received files. */
 function classifyMedia(msg: any): MediaDescriptor | null {
   if (msg.photo) return { kind: "image", name: "photo.jpg", mime: "image/jpeg" };
@@ -342,51 +395,14 @@ function attachReceiver(deviceId: string, client: TelegramClient): void {
       // the bot (incoming) or self (outgoing), so always key on chatId.
       const peerId = idToNum(msg.chatId ?? msg.senderId);
       if (!peerId) return;
-      const peer = store.getPeer(deviceId, peerId);
+      const peer = store.getAccountPeer(deviceId, peerId);
       if (!peer) return; // not a subscribed peer — ignore
-      const rawText: string = entitiesToMarkdown(msg.message ?? "", msg.entities as MdEntity[] | undefined);
-      const visibleText = !outgoing ? cleanAgentVisibleText(rawText) : rawText;
-      const extracted = !outgoing ? extractAgentPayloads(visibleText) : { text: visibleText, payloads: [] };
-      const text = extracted.text;
-      const mediaInfo = classifyMedia(msg);
-      const inlineKeyboard = extractInlineKeyboard(msg.replyMarkup);
-      if (!text && !mediaInfo && extracted.payloads.length === 0 && !inlineKeyboard) return; // nothing renderable (e.g. service message)
-      // Telegram message_id is monotonic per chat → preserves order and is the /pull cursor.
-      const updateId = Number(msg.id);
-      // Telegram auto-attaches a webpage preview (title/desc/photo) for links → surface it.
-      let preview: LinkPreview | undefined;
-      const wp = (msg as { media?: { webpage?: any } }).media?.webpage;
-      if (wp && wp.className === "WebPage" && wp.url) {
-        preview = {
-          url: String(wp.url),
-          title: wp.title ? String(wp.title) : undefined,
-          description: wp.description ? String(wp.description) : undefined,
-          siteName: wp.siteName ? String(wp.siteName) : undefined,
-          image: wp.photo
-            ? `/media?deviceId=${encodeURIComponent(deviceId)}&peer=${peerId}&msg=${updateId}`
-            : undefined,
-        };
-      }
-      const media = mediaInfo
-        ? { ...mediaInfo, url: `/media?deviceId=${encodeURIComponent(deviceId)}&peer=${peerId}&msg=${updateId}` }
-        : undefined;
+      const update = updateFromTelegramMessage({ deviceId, peer, msg, edited });
+      if (!update?.message) return;
+      const updateId = update.message.message_id;
       const baseUpdateId = updateId * 1000;
-      const eventUpdateId = edited ? nextEditUpdateId(deviceId, peerId, updateId) : baseUpdateId;
-      const update: TgUpdate = {
-        update_id: eventUpdateId,
-        message: {
-          message_id: updateId,
-          date: Number(msg.date),
-          text,
-          chat: { id: peerId, type: "private" },
-          from: { id: peerId, is_bot: !outgoing, first_name: peer.title ?? "" },
-          outgoing,
-          ...(preview ? { preview } : {}),
-          ...(media ? { media } : {}),
-          ...(extracted.payloads.length ? { agent_payload: extracted.payloads[0], agent_payloads: extracted.payloads } : {}),
-          inline_keyboard: inlineKeyboard ?? null,
-        },
-      };
+      const text = update.message.text ?? "";
+      const inlineKeyboard = update.message.inline_keyboard ?? undefined;
       store.insertUpdate(peerId, update);
       if (!outgoing && inlineKeyboard) {
         cancelHelper(deviceId, peerId);
@@ -538,7 +554,7 @@ export const mtproto = {
   async sendAs(deviceId: string, peerId: number, text: string, replyTo?: number): Promise<number> {
     const client = clients.get(deviceId);
     if (!client) throw new Error("not signed in");
-    const peer = store.getPeer(deviceId, peerId);
+    const peer = store.getAccountPeer(deviceId, peerId);
     const target: string | number = peer?.username ? peer.username : peerId;
     const opts = replyTo ? { message: text, replyTo } : { message: text };
     try {
@@ -562,7 +578,7 @@ export const mtproto = {
   ): Promise<number> {
     const client = clients.get(deviceId);
     if (!client) throw new Error("not signed in");
-    const peer = store.getPeer(deviceId, peerId);
+    const peer = store.getAccountPeer(deviceId, peerId);
     const target: string | number = peer?.username ? peer.username : peerId;
     const { buffer, fileName, mime, kind, caption } = opts;
     const file = new CustomFile(fileName, buffer.length, "", buffer);
@@ -601,7 +617,7 @@ export const mtproto = {
   ): Promise<number> {
     const client = clients.get(deviceId);
     if (!client) throw new Error("not signed in");
-    const peer = store.getPeer(deviceId, peerId);
+    const peer = store.getAccountPeer(deviceId, peerId);
     const target: string | number = peer?.username ? peer.username : peerId;
     const allDocs = items.every((i) => i.kind === "document");
     const files = items.map((i) => new CustomFile(i.fileName, i.buffer.length, "", i.buffer));
@@ -645,6 +661,29 @@ export const mtproto = {
     if (!raw) return null;
     const buffer = Buffer.isBuffer(raw) ? raw : Buffer.from(raw as Uint8Array);
     return { buffer, mime };
+  },
+
+  async syncMessages(
+    deviceId: string,
+    peerId: number,
+    opts: { sinceUpdateId?: number; limit?: number } = {},
+  ): Promise<TgUpdate[]> {
+    const client = clients.get(deviceId);
+    if (!client) throw new Error("not signed in");
+    const peer = store.getAccountPeer(deviceId, peerId);
+    if (!peer) throw new Error("peer not found");
+    const target: string | number = peer.username ? peer.username : peerId;
+    const limit = Math.max(1, Math.min(200, opts.limit ?? 50));
+    const minMessageId = Math.max(0, Math.floor((opts.sinceUpdateId ?? 0) / 1000));
+    const request: Record<string, unknown> = { limit };
+    if (minMessageId > 0) request.minId = minMessageId;
+    const messages = (await client.getMessages(target, request as never)) as unknown as Array<any>;
+    const updates = messages
+      .map((msg) => updateFromTelegramMessage({ deviceId, peer, msg }))
+      .filter((u): u is TgUpdate => !!u && u.update_id >= (opts.sinceUpdateId ?? 0))
+      .sort((a, b) => a.update_id - b.update_id);
+    for (const update of updates) store.insertUpdate(peerId, update);
+    return updates;
   },
 
   async logout(deviceId: string): Promise<void> {

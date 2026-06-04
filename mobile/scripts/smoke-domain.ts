@@ -2,8 +2,8 @@
  * Runs the real domain modules (no RN imports) to verify behavior.
  * Run: node --experimental-strip-types scripts/smoke-domain.ts
  */
-import { parseMarkdown } from "../src/domain/markdown/parse.ts";
-import { maskArgs, canTransition } from "../src/domain/entities.ts";
+import { parseMarkdown } from "../src/domain/markdown/parse";
+import { maskArgs, canTransition } from "../src/domain/entities";
 
 let ok = 0;
 let bad = 0;

@@ -21,7 +21,7 @@ import { BuddyListItem } from '@/ui/buddies/BuddyListItem';
 import { useTheme } from '@/ui/theme/ThemeProvider';
 import { fontSize, radius, space, touch } from '@/ui/theme/tokens';
 
-import { initBuddiesRuntime, refreshBuddies, removeBuddyFlow } from '../_runtime/buddies';
+import { initBuddiesRuntime, refreshBuddies, removeBuddyFlow, syncRelayPeersToLocal } from '../_runtime/buddies';
 
 export default function BuddiesScreen() {
   const { color } = useTheme();
@@ -42,7 +42,10 @@ export default function BuddiesScreen() {
 
   useFocusEffect(
     useCallback(() => {
-      refreshBuddies();
+      initBuddiesRuntime();
+      void syncRelayPeersToLocal().catch(() => {
+        refreshBuddies();
+      });
       return undefined;
     }, []),
   );
@@ -55,7 +58,7 @@ export default function BuddiesScreen() {
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
     try {
-      refreshBuddies();
+      await syncRelayPeersToLocal();
     } finally {
       setRefreshing(false);
     }

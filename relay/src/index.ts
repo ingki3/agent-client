@@ -20,7 +20,9 @@ import type {
   AuthStartBody,
   AuthCodeBody,
   Auth2faBody,
+  PeerRemoveBody,
   PeerResolveBody,
+  MessageSyncBody,
   SendBody,
   FormSubmitBody,
   HelperSubmitBody,
@@ -392,6 +394,22 @@ app.get("/auth/status", async (req, reply) => {
   });
 });
 
+app.get("/peers/list", async (req, reply) => {
+  const q = req.query as { deviceId?: string };
+  const deviceId = q.deviceId ?? "";
+  if (!deviceId) return reply.code(400).send({ ok: false, error: "bad request" });
+  if (!authDevice(req, deviceId)) return reply.code(401).send({ ok: false, error: "unauthorized" });
+  const peers = store.listAccountPeers(deviceId).map((p) => ({
+    peerId: p.peer_id,
+    username: p.username ?? "",
+    title: p.title ?? p.username ?? String(p.peer_id),
+    createdAt: p.created_at,
+    lastUsedAt: p.last_used_at,
+  }));
+  log.info(`peers list device=${deviceId} count=${peers.length}`);
+  return reply.send({ ok: true, peers });
+});
+
 app.post("/peers/resolve", async (req, reply) => {
   const body = req.body as PeerResolveBody;
   if (!body?.deviceId || !body?.username) return reply.code(400).send({ ok: false, error: "bad request" });
@@ -399,6 +417,32 @@ app.post("/peers/resolve", async (req, reply) => {
   try {
     const peer = await mtproto.resolvePeer(body.deviceId, body.username);
     return reply.send({ ok: true, peer });
+  } catch (e) {
+    return mtprotoErr(reply, e);
+  }
+});
+
+app.post("/peers/remove", async (req, reply) => {
+  const body = req.body as PeerRemoveBody;
+  if (!body?.deviceId || !Number.isFinite(body.peerId)) return reply.code(400).send({ ok: false, error: "bad request" });
+  if (!authDevice(req, body.deviceId)) return reply.code(401).send({ ok: false, error: "unauthorized" });
+  store.removeAccountPeer(body.deviceId, body.peerId);
+  log.info(`peers remove device=${body.deviceId} peer=${body.peerId}`);
+  return reply.send({ ok: true });
+});
+
+app.post("/messages/sync", async (req, reply) => {
+  const body = req.body as MessageSyncBody;
+  if (!body?.deviceId || !Number.isFinite(body.peerId)) return reply.code(400).send({ ok: false, error: "bad request" });
+  if (!authDevice(req, body.deviceId)) return reply.code(401).send({ ok: false, error: "unauthorized" });
+  try {
+    const updates = await mtproto.syncMessages(body.deviceId, body.peerId, {
+      sinceUpdateId: Number.isFinite(body.sinceUpdateId) ? body.sinceUpdateId : 0,
+      limit: Number.isFinite(body.limit) ? body.limit : 50,
+    });
+    const cursor = updates.length ? updates[updates.length - 1]!.update_id + 1 : (body.sinceUpdateId ?? 0);
+    log.info(`messages sync device=${body.deviceId} peer=${body.peerId} since=${body.sinceUpdateId ?? 0} count=${updates.length}`);
+    return reply.send({ ok: true, updates, cursor });
   } catch (e) {
     return mtprotoErr(reply, e);
   }

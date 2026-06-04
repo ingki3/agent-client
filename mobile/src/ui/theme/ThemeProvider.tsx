@@ -1,5 +1,4 @@
 import { createContext, useContext, useMemo, type ReactNode } from 'react';
-import { useColorScheme } from 'react-native';
 
 import { colors, type ColorMode, type ColorToken } from './tokens';
 
@@ -11,8 +10,7 @@ type Theme = {
 const ThemeContext = createContext<Theme | null>(null);
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
-  const systemMode = useColorScheme();
-  const mode: ColorMode = systemMode === 'dark' ? 'dark' : 'light';
+  const mode: ColorMode = 'dark';
 
   const theme = useMemo<Theme>(
     () => ({

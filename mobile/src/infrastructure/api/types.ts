@@ -1,3 +1,5 @@
+import type { HelperItem, InlineKeyboard, LinkPreview } from '@/domain/entities/Message';
+
 // Telegram-compatible Bot API wire types (TECH_SPEC §12.1, PRD §5.3).
 // Only the fields MVP actually consumes are typed; unknown fields are preserved by passing through.
 
@@ -26,6 +28,11 @@ export interface TgMessage {
   chat: TgChat;
   text?: string;
   from?: TgBotUser;
+  outgoing?: boolean;
+  preview?: LinkPreview;
+  media?: { kind: string; name: string; mime: string; size?: number; url: string };
+  helper_items?: HelperItem[];
+  inline_keyboard?: InlineKeyboard | null;
   edit_date?: number;
 }
 

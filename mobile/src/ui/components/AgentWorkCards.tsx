@@ -145,7 +145,7 @@ function ArtifactCard({ artifact }: { artifact: AgentArtifact }) {
           </View>
           <ScrollView style={{ flex: 1 }}>
             {artifact.kind === "markdown" || artifact.kind === "checklist" || artifact.kind === "table" ? (
-              <Markdown text={artifact.content} baseColor={color("text-primary")} />
+              <Markdown text={artifact.content} />
             ) : (
               <Text selectable style={{ fontFamily: MONO, color: color("text-primary"), fontSize: fontSize.code, lineHeight: fontSize.code * 1.5 }}>
                 {artifact.content}

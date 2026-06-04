@@ -18,6 +18,6 @@ export async function signOut(): Promise<void> {
   useTasksStore.getState().clear();
   useArtifactsStore.getState().clear();
   useFormsStore.getState().clear();
-  useChatStore.setState({ byBuddy: {}, streamingMessageId: {} });
-  await useAuthStore.getState().reset(); // clears user id + flips to onboarding
+  useChatStore.getState().reset();
+  await useAuthStore.getState().signOut(); // clears user id + flips to onboarding
 }

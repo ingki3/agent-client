@@ -64,6 +64,8 @@ export type AuthStartBody = { deviceId: string; phone: string };
 export type AuthCodeBody = { deviceId: string; code: string };
 export type Auth2faBody = { deviceId: string; password: string };
 export type PeerResolveBody = { deviceId: string; username: string };
+export type PeerRemoveBody = { deviceId: string; peerId: number };
+export type MessageSyncBody = { deviceId: string; peerId: number; sinceUpdateId?: number; limit?: number };
 export type SendBody = { deviceId: string; peerId: number; text: string; clientTag?: string; replyTo?: number };
 
 export type AgentPayload =

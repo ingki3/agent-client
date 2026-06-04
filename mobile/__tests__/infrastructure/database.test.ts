@@ -23,20 +23,22 @@ interface TableInfoRow {
   pk: number;
 }
 
+const LATEST_SCHEMA_VERSION = Math.max(...MIGRATIONS.map((migration) => migration.version));
+
 describe('Database migration', () => {
   it('applies v0 -> v1 and records schema_version', () => {
     const db = createBetterSqlite3Database();
     expect(getCurrentSchemaVersion(db)).toBe(0);
     const reached = applyMigrations(db);
-    expect(reached).toBe(1);
-    expect(getCurrentSchemaVersion(db)).toBe(1);
+    expect(reached).toBe(LATEST_SCHEMA_VERSION);
+    expect(getCurrentSchemaVersion(db)).toBe(LATEST_SCHEMA_VERSION);
     db.close();
   });
 
   it('is idempotent — second run does not change version', () => {
     const db = openMigratedDb();
-    expect(applyMigrations(db)).toBe(1);
-    expect(applyMigrations(db, MIGRATIONS)).toBe(1);
+    expect(applyMigrations(db)).toBe(LATEST_SCHEMA_VERSION);
+    expect(applyMigrations(db, MIGRATIONS)).toBe(LATEST_SCHEMA_VERSION);
     db.close();
   });
 
@@ -68,6 +70,10 @@ describe('Database migration', () => {
         'status',
         'created_at',
         'trace_id',
+        'preview_json',
+        'helper_items_json',
+        'inline_keyboard_json',
+        'attachments_json',
       ]),
     );
 

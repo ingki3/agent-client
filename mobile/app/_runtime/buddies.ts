@@ -17,6 +17,7 @@ import {
 } from '@/application/usecases/buddies';
 import type { Buddy, BuddyId } from '@/domain/entities/Buddy';
 import { BotApiClient } from '@/infrastructure/api/bot-api-client';
+import { relayClient, type StoredPeer } from '@/infrastructure/api/relayClient';
 import { createExpoSqliteDatabase } from '@/infrastructure/storage/adapters/expo-sqlite-adapter';
 import { botTokenStore } from '@/infrastructure/storage/bot-token-store';
 import { applyMigrations, type Database } from '@/infrastructure/storage/database';
@@ -51,6 +52,7 @@ export function initBuddiesRuntime(): void {
   depsRef = { db, buddiesRepo, tokenStore: botTokenStore, botApi };
 
   refreshBuddies();
+  void syncRelayPeersToLocal().catch(() => undefined);
 }
 
 /** S-10 entry / pull-to-refresh / post-mutation re-sync. */
@@ -58,6 +60,18 @@ export function refreshBuddies(): Buddy[] {
   const list = listBuddiesUseCase({ buddiesRepo: getDeps().buddiesRepo });
   useBuddiesStore.getState().setAll(list);
   return list;
+}
+
+export async function syncRelayPeersToLocal(): Promise<Buddy[]> {
+  const deps = getDeps();
+  const peers = await relayClient.listPeers();
+  if (peers.length === 0) return refreshBuddies();
+
+  for (const peer of peers) {
+    const buddy = toBuddyFromStoredPeer(peer, deps.buddiesRepo.findById(String(peer.peerId)));
+    deps.buddiesRepo.upsert(buddy);
+  }
+  return refreshBuddies();
 }
 
 export async function addBuddyFlow(input: {
@@ -72,6 +86,10 @@ export async function addBuddyFlow(input: {
 
 export async function removeBuddyFlow(buddyId: BuddyId): Promise<void> {
   const deps = getDeps();
+  const peerId = Number(buddyId);
+  if (Number.isFinite(peerId)) {
+    void relayClient.removePeer(peerId).catch(() => false);
+  }
   await removeBuddyUseCase(deps, { buddyId });
   useBuddiesStore.getState().remove(buddyId);
 }
@@ -99,6 +117,30 @@ function toIdentity(user: {
     isBot: user.is_bot,
     firstName: user.first_name,
     username: user.username ?? null,
+  };
+}
+
+function toBuddyFromStoredPeer(peer: StoredPeer, existing: Buddy | null): Buddy {
+  const id = String(peer.peerId);
+  const displayName = peer.title || peer.username || existing?.displayName || id;
+  const username = peer.username || existing?.username || '';
+  if (existing) {
+    return {
+      ...existing,
+      username,
+      displayName,
+    };
+  }
+  return {
+    id,
+    username,
+    displayName,
+    iconUrl: null,
+    traceSupported: false,
+    lastMessagePreview: null,
+    lastMessageAt: null,
+    unreadCount: 0,
+    createdAt: peer.createdAt && peer.createdAt > 0 ? peer.createdAt : Date.now(),
   };
 }
 

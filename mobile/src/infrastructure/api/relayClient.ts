@@ -20,6 +20,13 @@ import type { FormValue, LinkPreview, TtsMode } from "@/domain/entities";
 export type RelayBot = { buddyId: string; botToken?: string; botId: number };
 
 export type ResolvedPeer = { peerId: number; username: string; title: string };
+export type StoredPeer = {
+  peerId: number;
+  username: string;
+  title: string;
+  createdAt?: number;
+  lastUsedAt?: number;
+};
 
 export type AuthResult =
   | { ok: true; needsCode?: boolean; signedIn?: boolean; needs2fa?: boolean; tgUserId?: number }
@@ -46,6 +53,22 @@ export type InlineKeyboardCallbackResult = {
   url?: string;
 };
 
+const RELAY_REQUEST_TIMEOUT_MS = 15_000;
+const RELAY_TTS_REQUEST_TIMEOUT_MS = 120_000;
+
+async function withTimeout<T>(
+  fn: (signal: AbortSignal) => Promise<T>,
+  timeoutMs = RELAY_REQUEST_TIMEOUT_MS,
+): Promise<T> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fn(controller.signal);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function deviceId(): Promise<string> {
   let id = await secureStore.get(SecureKeys.deviceId);
   if (!id) {
@@ -60,18 +83,69 @@ async function authHeader(): Promise<Record<string, string>> {
   return secret ? { Authorization: `Bearer ${secret}` } : {};
 }
 
-async function postJson(path: string, body: unknown): Promise<Record<string, unknown> | null> {
+async function postJson(
+  path: string,
+  body: unknown,
+  timeoutMs = RELAY_REQUEST_TIMEOUT_MS,
+): Promise<Record<string, unknown> | null> {
   if (!config.relayBase) return null;
   try {
-    const res = await fetch(`${config.relayBase}${path}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...(await authHeader()) },
-      body: JSON.stringify(body),
-    });
+    const headers = { "Content-Type": "application/json", ...(await authHeader()) };
+    const res = await withTimeout(
+      (signal) =>
+        fetch(`${config.relayBase}${path}`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(body),
+          signal,
+        }),
+      timeoutMs,
+    );
     return (await res.json()) as Record<string, unknown>;
   } catch {
     return null;
   }
+}
+
+async function getJson(path: string): Promise<Record<string, unknown> | null> {
+  if (!config.relayBase) return null;
+  try {
+    const headers = { ...(await authHeader()) };
+    const res = await withTimeout((signal) =>
+      fetch(`${config.relayBase}${path}`, {
+        headers,
+        signal,
+      }),
+    );
+    if (!res.ok) return null;
+    return (await res.json()) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+function absoluteRelayUrl(url?: string): string | undefined {
+  if (!url) return undefined;
+  if (/^https?:\/\//i.test(url)) return url;
+  return config.relayBase ? `${config.relayBase}${url}` : url;
+}
+
+function normalizeRelayUpdates(updates: TgUpdate[]): TgUpdate[] {
+  return updates.map((update) => {
+    const message = update.message ?? update.edited_message;
+    if (!message) return update;
+    const normalized = { ...message };
+    if (normalized.preview?.image) {
+      const image = absoluteRelayUrl(normalized.preview.image);
+      normalized.preview = image ? { ...normalized.preview, image } : { ...normalized.preview };
+    }
+    if (normalized.media?.url) {
+      normalized.media = { ...normalized.media, url: absoluteRelayUrl(normalized.media.url) ?? normalized.media.url };
+    }
+    return update.message
+      ? { ...update, message: normalized }
+      : { ...update, edited_message: normalized };
+  });
 }
 
 export const relayClient = {
@@ -116,7 +190,7 @@ export const relayClient = {
     );
     if (!res.ok) return [];
     const body = (await res.json()) as { ok: boolean; updates?: TgUpdate[] };
-    return body.ok && body.updates ? body.updates : [];
+    return body.ok && body.updates ? normalizeRelayUpdates(body.updates) : [];
   },
 
   async linkPreview(url: string): Promise<LinkPreview | null> {
@@ -132,7 +206,7 @@ export const relayClient = {
     if (!config.relayBase) return null;
     const id = await secureStore.get(SecureKeys.deviceId);
     if (!id) return null;
-    const body = await postJson("/tts/audio", { deviceId: id, ...payload });
+    const body = await postJson("/tts/audio", { deviceId: id, ...payload }, RELAY_TTS_REQUEST_TIMEOUT_MS);
     if (!body?.ok || typeof body.audioUrl !== "string" || typeof body.script !== "string") return null;
     const audioUrl = body.audioUrl.startsWith("http")
       ? body.audioUrl
@@ -207,6 +281,46 @@ export const relayClient = {
     return body.peer as ResolvedPeer;
   },
 
+  async listPeers(): Promise<StoredPeer[]> {
+    if (!config.relayBase) return [];
+    const id = await secureStore.get(SecureKeys.deviceId);
+    if (!id) return [];
+    const body = await getJson(`/peers/list?deviceId=${encodeURIComponent(id)}`);
+    if (!body?.ok || !Array.isArray(body.peers)) return [];
+    return body.peers
+      .map((peer) => {
+        const p = peer as Record<string, unknown>;
+        const peerId = Number(p.peerId);
+        if (!Number.isFinite(peerId)) return null;
+        const item: StoredPeer = {
+          peerId,
+          username: typeof p.username === "string" ? p.username : "",
+          title: typeof p.title === "string" ? p.title : String(peerId),
+        };
+        if (typeof p.createdAt === "number") item.createdAt = p.createdAt;
+        if (typeof p.lastUsedAt === "number") item.lastUsedAt = p.lastUsedAt;
+        return item;
+      })
+      .filter((peer): peer is StoredPeer => peer !== null);
+  },
+
+  async removePeer(peerId: number): Promise<boolean> {
+    if (!config.relayBase || !Number.isFinite(peerId)) return false;
+    const id = await secureStore.get(SecureKeys.deviceId);
+    if (!id) return false;
+    const body = await postJson("/peers/remove", { deviceId: id, peerId });
+    return !!body?.ok;
+  },
+
+  async syncMessages(peerId: number, sinceUpdateId = 0, limit = 50): Promise<TgUpdate[]> {
+    if (!config.relayBase || !Number.isFinite(peerId)) return [];
+    const id = await secureStore.get(SecureKeys.deviceId);
+    if (!id) return [];
+    const body = await postJson("/messages/sync", { deviceId: id, peerId, sinceUpdateId, limit });
+    if (!body?.ok || !Array.isArray(body.updates)) return [];
+    return normalizeRelayUpdates(body.updates as TgUpdate[]);
+  },
+
   /** Send `text` to `peerId` as the user (optionally as a reply). Returns the sent message id. */
   async sendAs(peerId: number, text: string, clientTag?: string, replyTo?: number): Promise<number> {
     const id = await deviceId();
@@ -259,25 +373,25 @@ export const relayClient = {
       label?: string;
       value?: string;
       values?: Record<string, FormValue>;
-      source?: {
-        messageId?: number;
-        text?: string;
-        excerpt?: string;
-        urls?: string[];
-        handles?: string[];
-        preview?: { url?: string; title?: string; description?: string; siteName?: string };
-        attachments?: Array<{ kind?: string; name?: string; mime?: string; size?: number }>;
-        recentMessages?: Array<{
-          messageId?: number;
-          role?: string;
-          text?: string;
-          excerpt?: string;
-          urls?: string[];
-          handles?: string[];
-          preview?: { url?: string; title?: string; description?: string; siteName?: string };
-          attachments?: Array<{ kind?: string; name?: string; mime?: string; size?: number }>;
-        }>;
-      };
+	      source?: {
+	        messageId?: number | undefined;
+	        text?: string | undefined;
+	        excerpt?: string | undefined;
+	        urls?: string[] | undefined;
+	        handles?: string[] | undefined;
+	        preview?: { url?: string | undefined; title?: string | undefined; description?: string | undefined; siteName?: string | undefined } | undefined;
+	        attachments?: Array<{ kind?: string | undefined; name?: string | undefined; mime?: string | undefined; size?: number | undefined }> | undefined;
+	        recentMessages?: Array<{
+	          messageId?: number | undefined;
+	          role?: string | undefined;
+	          text?: string | undefined;
+	          excerpt?: string | undefined;
+	          urls?: string[] | undefined;
+	          handles?: string[] | undefined;
+	          preview?: { url?: string | undefined; title?: string | undefined; description?: string | undefined; siteName?: string | undefined } | undefined;
+	          attachments?: Array<{ kind?: string | undefined; name?: string | undefined; mime?: string | undefined; size?: number | undefined }> | undefined;
+	        }> | undefined;
+	      };
     },
   ): Promise<boolean> {
     const id = await deviceId();
@@ -290,10 +404,9 @@ export const relayClient = {
     const body = await postJson("/inline-keyboard/callback", { deviceId: id, peerId, messageId, buttonId });
     if (!body?.ok) return null;
     const result = body.result && typeof body.result === "object" ? body.result as Record<string, unknown> : {};
-    return {
-      message: typeof result.message === "string" ? result.message : undefined,
-      alert: !!result.alert,
-      url: typeof result.url === "string" ? result.url : undefined,
-    };
+    const callback: InlineKeyboardCallbackResult = { alert: !!result.alert };
+    if (typeof result.message === "string") callback.message = result.message;
+    if (typeof result.url === "string") callback.url = result.url;
+    return callback;
   },
 };

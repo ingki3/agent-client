@@ -1,5 +1,5 @@
 /**
- * S-03 · SMS 코드 입력 (TECH §3.5).
+ * S-03 · Telegram 로그인 코드 입력 (TECH §3.5).
  *
  * Features:
  * - OTP autofill (iOS textContentType="oneTimeCode", Android autoComplete="sms-otp")
@@ -21,8 +21,9 @@ import { useTheme } from "@/ui/theme/ThemeProvider";
 import { fontSize, radius, space, touch } from "@/ui/theme/tokens";
 import { useAuthStore } from "@/application/stores/auth";
 import { maskE164 } from "@/domain/value-objects/phone";
+import { config } from "@/infrastructure/config";
 
-const CODE_LENGTH = 6;
+const CODE_LENGTH = config.relayBase ? 5 : 6;
 
 function formatRemaining(ms: number): string {
   const total = Math.max(0, Math.floor(ms / 1000));
@@ -78,22 +79,28 @@ export default function OtpScreen() {
   const expired = remainingMs <= 0;
   const canSubmit = code.length === CODE_LENGTH && !pending && !expired;
 
+  const submitCode = async (value: string) => {
+    const ok = await verifyCode(value);
+    if (!ok) return;
+    const status = useAuthStore.getState().status;
+    if (status === "awaiting_2fa") {
+      router.replace("/(auth)/twofa");
+      return;
+    }
+    setCode("");
+  };
+
   const handleChange = (raw: string) => {
     const digits = raw.replace(/[^\d]/g, "").slice(0, CODE_LENGTH);
     setCode(digits);
     if (digits.length === CODE_LENGTH && !pending && !expired) {
-      // Auto-submit when the autofill paste arrives.
-      void verifyCode(digits);
+      void submitCode(digits);
     }
   };
 
   const handleSubmit = async () => {
     if (!canSubmit) return;
-    const ok = await verifyCode(code);
-    if (ok) {
-      // Root layout will route to "/" once status flips to "auth".
-      setCode("");
-    }
+    await submitCode(code);
   };
 
   const handleResend = async (channel: "sms" | "voice" = "sms") => {
@@ -134,7 +141,9 @@ export default function OtpScreen() {
               lineHeight: 22,
             }}
           >
-            {phone ? `${maskE164(phone)} 로 보낸 ${CODE_LENGTH}자리 코드` : "코드를 보냈어요"}
+            {phone
+              ? `${maskE164(phone)} Telegram 계정으로 보낸 ${CODE_LENGTH}자리 코드`
+              : "Telegram 앱으로 보낸 코드를 입력해 주세요"}
           </Text>
         </View>
 
@@ -277,7 +286,7 @@ export default function OtpScreen() {
         </Pressable>
       </View>
 
-      {/* D-01 — SMS 코드 오류/만료 다이얼로그 */}
+      {/* D-01 — 로그인 코드 오류/만료 다이얼로그 */}
       <Modal
         visible={dialog !== null}
         transparent

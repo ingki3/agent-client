@@ -41,16 +41,17 @@ export const useTasksStore = create<TasksState>((set, get) => {
       set((s) => {
         const list = s.byBuddy[buddyId] ?? [];
         const existing = list.find((t) => t.id === task.id);
-        const next: AgentTask = {
-          id: task.id,
-          buddyId,
-          title: task.title,
-          status: task.status,
-          createdAt: task.createdAt ?? existing?.createdAt ?? ts,
-          updatedAt: task.updatedAt ?? ts,
-          sourceMessageId: sourceMessageId ?? task.sourceMessageId ?? existing?.sourceMessageId,
-          artifactIds: task.artifactIds ?? existing?.artifactIds ?? [],
-        };
+	        const next: AgentTask = {
+	          id: task.id,
+	          buddyId,
+	          title: task.title,
+	          status: task.status,
+	          createdAt: task.createdAt ?? existing?.createdAt ?? ts,
+	          updatedAt: task.updatedAt ?? ts,
+	          artifactIds: task.artifactIds ?? existing?.artifactIds ?? [],
+	        };
+	        const nextSourceMessageId = sourceMessageId ?? task.sourceMessageId ?? existing?.sourceMessageId;
+	        if (nextSourceMessageId !== undefined) next.sourceMessageId = nextSourceMessageId;
         const merged = existing ? list.map((t) => (t.id === task.id ? { ...existing, ...next } : t)) : [...list, next];
         return { byBuddy: { ...s.byBuddy, [buddyId]: merged } };
       });

@@ -32,6 +32,7 @@ export type AuthErrorCode =
   | 'rate_limited'
   | 'invalid_code'
   | 'code_expired'
+  | 'invalid_password'
   | 'request_not_found'
   | 'unauthorized'
   | 'network'
