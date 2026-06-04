@@ -6,6 +6,7 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import '@/i18n';
 import { useAuthStore } from '@/application/stores/auth';
+import { loadRuntimeConfig } from '@/infrastructure/config';
 import { computeProtectedRoute } from '@/ui/navigation/protected-route';
 import { ThemeProvider, useTheme } from '@/ui/theme/ThemeProvider';
 
@@ -24,12 +25,12 @@ function useProtectedRoute() {
 }
 
 function RootStack() {
-  const { mode } = useTheme();
+  const { color, mode } = useTheme();
   useProtectedRoute();
   return (
     <>
       <StatusBar style={mode === 'dark' ? 'light' : 'dark'} />
-      <Stack screenOptions={{ headerShown: false }}>
+      <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: color('surface') } }}>
         <Stack.Screen name="index" />
         <Stack.Screen name="(auth)" />
         <Stack.Screen name="(main)" />
@@ -41,14 +42,17 @@ function RootStack() {
 export default function RootLayout() {
   const bootstrap = useAuthStore((s) => s.bootstrap);
   useEffect(() => {
-    void bootstrap();
-    initChatRuntime();
-    initNetworkRuntime();
+    void (async () => {
+      await loadRuntimeConfig();
+      await bootstrap();
+      initChatRuntime();
+      initNetworkRuntime();
+    })();
   }, [bootstrap]);
 
   return (
-    <GestureHandlerRootView style={{ flex: 1 }}>
-      <SafeAreaProvider>
+    <GestureHandlerRootView style={{ flex: 1, backgroundColor: '#0B0E14' }}>
+      <SafeAreaProvider style={{ flex: 1, backgroundColor: '#0B0E14' }}>
         <ThemeProvider>
           <RootStack />
         </ThemeProvider>

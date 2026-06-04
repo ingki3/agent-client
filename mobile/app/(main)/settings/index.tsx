@@ -1,8 +1,8 @@
 /**
  * S-20 · 설정. User id + links; reset → D-05 → signOut → onboarding (user-id entry).
  */
-import { useState } from "react";
-import { View, Text, Pressable, Modal } from "react-native";
+import { useEffect, useState } from "react";
+import { Alert, View, Text, Pressable, Modal, TextInput } from "react-native";
 import { useRouter } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useTheme } from "@/design/theme";
@@ -10,7 +10,8 @@ import { fontSize, radius, space, touch } from "@/design/tokens";
 import { useAuthStore } from "@/application/stores/auth";
 import { useNotificationsStore } from "@/application/stores/notifications";
 import { signOut } from "@/application/usecases/session";
-import { pushEnabled } from "@/infrastructure/config";
+import { config, defaultRelayBase, normalizeApiBase, pushEnabled, saveRelayBaseOverride } from "@/infrastructure/config";
+import { relayClient } from "@/infrastructure/api/relayClient";
 
 export default function SettingsScreen() {
   const { color } = useTheme();
@@ -20,9 +21,48 @@ export default function SettingsScreen() {
   const permission = useNotificationsStore((s) => s.permission);
   const enableNotifications = useNotificationsStore((s) => s.enable);
   const [confirm, setConfirm] = useState(false);
+  const [relayBase, setRelayBase] = useState(config.relayBase ?? "");
+  const [relayStatus, setRelayStatus] = useState<"idle" | "checking" | "ok" | "failed">("idle");
+
+  useEffect(() => {
+    setRelayBase(config.relayBase ?? "");
+  }, []);
 
   const notifLabel =
     permission === "granted" ? "알림 켜짐" : permission === "denied" ? "알림 꺼짐 (설정에서 허용)" : "알림 켜기";
+
+  const relayLabel =
+    relayStatus === "checking" ? "확인 중" : relayStatus === "ok" ? "연결됨" : relayStatus === "failed" ? "연결 실패" : "미확인";
+
+  const saveRelay = async () => {
+    const trimmed = relayBase.trim();
+    if (trimmed && !normalizeApiBase(trimmed)) {
+      Alert.alert("relay 주소 오류", "http:// 또는 https:// 로 시작하는 주소를 입력해 주세요.");
+      return;
+    }
+    const saved = await saveRelayBaseOverride(trimmed || null);
+    setRelayBase(saved ?? "");
+    setRelayStatus("idle");
+    Alert.alert("저장됨", "relay server 설정을 저장했습니다.");
+  };
+
+  const restoreRelayDefault = async () => {
+    const saved = await saveRelayBaseOverride(null);
+    setRelayBase(saved ?? "");
+    setRelayStatus("idle");
+  };
+
+  const checkRelay = async () => {
+    const trimmed = relayBase.trim();
+    if (trimmed && !normalizeApiBase(trimmed)) {
+      Alert.alert("relay 주소 오류", "http:// 또는 https:// 로 시작하는 주소를 입력해 주세요.");
+      return;
+    }
+    await saveRelayBaseOverride(trimmed || null);
+    setRelayStatus("checking");
+    const ok = await relayClient.health();
+    setRelayStatus(ok ? "ok" : "failed");
+  };
 
   const Row = ({ label, onPress, danger }: { label: string; onPress: () => void; danger?: boolean }) => (
     <Pressable
@@ -49,8 +89,78 @@ export default function SettingsScreen() {
         </View>
       </View>
 
+      <View style={{ paddingHorizontal: space[5], paddingBottom: space[5] }}>
+        <View style={{ backgroundColor: color("surface-elevated"), borderRadius: radius.xl, padding: space[5], gap: space[3] }}>
+          <View style={{ gap: space[1] }}>
+            <Text style={{ color: color("text-secondary"), fontSize: fontSize.caption }}>Relay server</Text>
+            <Text style={{ color: color("text-primary"), fontSize: fontSize["title-sm"], fontWeight: "700" }}>{relayLabel}</Text>
+            {defaultRelayBase() ? (
+              <Text style={{ color: color("text-secondary"), fontSize: fontSize.caption }} numberOfLines={1}>
+                기본값: {defaultRelayBase()}
+              </Text>
+            ) : null}
+          </View>
+          <TextInput
+            value={relayBase}
+            onChangeText={(value) => {
+              setRelayBase(value);
+              setRelayStatus("idle");
+            }}
+            placeholder="https://relay.example.com"
+            placeholderTextColor={color("text-secondary")}
+            autoCapitalize="none"
+            autoCorrect={false}
+            keyboardType="url"
+            style={{
+              minHeight: touch.min,
+              borderRadius: radius.md,
+              borderWidth: 1,
+              borderColor: color("border"),
+              backgroundColor: color("surface"),
+              color: color("text-primary"),
+              fontSize: fontSize.body,
+              paddingHorizontal: space[3],
+            }}
+          />
+          <View style={{ flexDirection: "row", gap: space[2] }}>
+            <Pressable
+              onPress={() => void saveRelay()}
+              style={{
+                flex: 1,
+                minHeight: touch.min,
+                borderRadius: radius.md,
+                backgroundColor: color("primary"),
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+            >
+              <Text style={{ color: color("on-primary"), fontSize: fontSize.body, fontWeight: "700" }}>저장</Text>
+            </Pressable>
+            <Pressable
+              onPress={() => void checkRelay()}
+              disabled={relayStatus === "checking"}
+              style={{
+                flex: 1,
+                minHeight: touch.min,
+                borderRadius: radius.md,
+                borderWidth: 1,
+                borderColor: color("border"),
+                alignItems: "center",
+                justifyContent: "center",
+                opacity: relayStatus === "checking" ? 0.6 : 1,
+              }}
+            >
+              <Text style={{ color: color("text-primary"), fontSize: fontSize.body, fontWeight: "700" }}>연결 테스트</Text>
+            </Pressable>
+          </View>
+          <Pressable onPress={() => void restoreRelayDefault()} style={{ minHeight: touch.min, justifyContent: "center" }}>
+            <Text style={{ color: color("text-secondary"), fontSize: fontSize["body-sm"] }}>기본값으로 복원</Text>
+          </Pressable>
+        </View>
+      </View>
+
       <View style={{ borderTopWidth: 1, borderBottomWidth: 1, borderColor: color("border") }}>
-        {pushEnabled ? (
+        {pushEnabled() ? (
           <>
             <Row label={notifLabel} onPress={() => void enableNotifications()} />
             <View style={{ height: 1, backgroundColor: color("border"), marginLeft: space[5] }} />

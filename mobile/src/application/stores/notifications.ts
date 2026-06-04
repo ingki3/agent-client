@@ -32,7 +32,7 @@ export const useNotificationsStore = create<NotifState>((set) => ({
   expoPushToken: null,
 
   enable: async () => {
-    if (!pushEnabled) return;
+    if (!pushEnabled()) return;
     const token = await pushClient.ensurePermissionAndToken();
     const status = await pushClient.getPermissionStatus();
     set({ expoPushToken: token, permission: token ? "granted" : status });
@@ -43,7 +43,7 @@ export const useNotificationsStore = create<NotifState>((set) => ({
   },
 
   refresh: async () => {
-    if (!pushEnabled) return;
+    if (!pushEnabled()) return;
     const status = await pushClient.getPermissionStatus();
     let token = await secureStore.get(SecureKeys.expoPushToken);
     set({ permission: status, expoPushToken: token });

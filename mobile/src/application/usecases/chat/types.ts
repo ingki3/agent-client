@@ -8,6 +8,7 @@
  */
 import type { BotApiClient } from '@/infrastructure/api/bot-api-client';
 import type { BuddyId } from '@/domain/entities/Buddy';
+import type { Attachment, HelperItem, InlineKeyboard, LinkPreview } from '@/domain/entities/Message';
 import type { Database } from '@/infrastructure/storage/database';
 import type { BuddiesRepository } from '@/infrastructure/storage/repositories/buddies-repo';
 import type { MessagesRepository } from '@/infrastructure/storage/repositories/messages-repo';
@@ -23,6 +24,27 @@ export interface ChatBotTokenPort {
   load(buddyId: BuddyId): Promise<string | null>;
 }
 
+export type RelayMessageSnapshot = {
+  id: string;
+  peerId: number;
+  messageId: number;
+  role: 'user' | 'agent';
+  text: string;
+  status: 'streaming' | 'complete';
+  date: number;
+  updatedAt: number;
+  cursor: number;
+  preview?: LinkPreview;
+  media?: Pick<Attachment, 'kind' | 'name' | 'mime' | 'size'> & { url: string };
+  helperItems?: HelperItem[];
+  inlineKeyboard?: InlineKeyboard | null;
+};
+
+export type RelaySnapshotSyncResult = {
+  messages: RelayMessageSnapshot[];
+  cursor: number;
+};
+
 export interface ChatUseCaseDeps {
   db: Database;
   buddiesRepo: BuddiesRepository;
@@ -32,6 +54,7 @@ export interface ChatUseCaseDeps {
   botApi: BotApiClient;
   relaySendMessage?: (peerId: number, text: string, clientTag?: string) => Promise<number>;
   relaySyncMessages?: (peerId: number, sinceUpdateId: number, limit?: number) => Promise<TgUpdate[]>;
+  relaySyncMessageSnapshots?: (peerId: number, sinceCursor: number, limit?: number) => Promise<RelaySnapshotSyncResult>;
   /** Inject `uuid()` so tests can pin clientMessageId. */
   newClientMessageId: () => string;
   /** Inject `Date.now()` so tests can pin timestamps. */

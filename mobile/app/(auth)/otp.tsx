@@ -23,8 +23,6 @@ import { useAuthStore } from "@/application/stores/auth";
 import { maskE164 } from "@/domain/value-objects/phone";
 import { config } from "@/infrastructure/config";
 
-const CODE_LENGTH = config.relayBase ? 5 : 6;
-
 function formatRemaining(ms: number): string {
   const total = Math.max(0, Math.floor(ms / 1000));
   const m = Math.floor(total / 60).toString().padStart(2, "0");
@@ -35,6 +33,7 @@ function formatRemaining(ms: number): string {
 export default function OtpScreen() {
   const { color } = useTheme();
   const router = useRouter();
+  const codeLength = config.relayBase ? 5 : 6;
 
   const phone = useAuthStore((s) => s.phoneE164);
   const requestId = useAuthStore((s) => s.requestId);
@@ -77,7 +76,7 @@ export default function OtpScreen() {
 
   const remainingMs = codeExpiresAt ? codeExpiresAt - Date.now() : 0;
   const expired = remainingMs <= 0;
-  const canSubmit = code.length === CODE_LENGTH && !pending && !expired;
+  const canSubmit = code.length === codeLength && !pending && !expired;
 
   const submitCode = async (value: string) => {
     const ok = await verifyCode(value);
@@ -91,9 +90,9 @@ export default function OtpScreen() {
   };
 
   const handleChange = (raw: string) => {
-    const digits = raw.replace(/[^\d]/g, "").slice(0, CODE_LENGTH);
+    const digits = raw.replace(/[^\d]/g, "").slice(0, codeLength);
     setCode(digits);
-    if (digits.length === CODE_LENGTH && !pending && !expired) {
+    if (digits.length === codeLength && !pending && !expired) {
       void submitCode(digits);
     }
   };
@@ -112,12 +111,12 @@ export default function OtpScreen() {
 
   const cells = useMemo(
     () =>
-      Array.from({ length: CODE_LENGTH }, (_, i) => {
+      Array.from({ length: codeLength }, (_, i) => {
         const ch = code[i] ?? "";
         const focused = i === code.length;
         return { ch, focused };
       }),
-    [code],
+    [code, codeLength],
   );
 
   return (
@@ -142,7 +141,7 @@ export default function OtpScreen() {
             }}
           >
             {phone
-              ? `${maskE164(phone)} Telegram 계정으로 보낸 ${CODE_LENGTH}자리 코드`
+              ? `${maskE164(phone)} Telegram 계정으로 보낸 ${codeLength}자리 코드`
               : "Telegram 앱으로 보낸 코드를 입력해 주세요"}
           </Text>
         </View>
@@ -201,7 +200,7 @@ export default function OtpScreen() {
             autoComplete="sms-otp"
             textContentType="oneTimeCode"
             importantForAutofill="yes"
-            maxLength={CODE_LENGTH}
+            maxLength={codeLength}
             editable={!expired}
             caretHidden
             style={{

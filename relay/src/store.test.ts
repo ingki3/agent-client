@@ -2,9 +2,18 @@
  * Deterministic unit check of the store buffer + /pull cursor logic + token encryption.
  * No network/bot needed. Run: RELAY_DB=/tmp/relay-unit.db node --import tsx src/store.test.ts
  */
-import { store } from "./store.js";
-import { encrypt, decrypt, newSecret, hashSecret, secretMatches } from "./crypto.js";
+import { unlinkSync } from "node:fs";
 import type { TgUpdate } from "./types.js";
+
+const testDb = `/tmp/agent-client-relay-store-test-${process.pid}.db`;
+try {
+  unlinkSync(testDb);
+} catch {
+  // absent is fine
+}
+process.env.RELAY_DB = testDb;
+const { encrypt, decrypt, newSecret, hashSecret, secretMatches } = await import("./crypto.js");
+const { store } = await import("./store.js");
 
 let ok = 0;
 let bad = 0;
@@ -80,6 +89,30 @@ store.subscribe("d1", 7001, "buddy-7001");
 store.insertUpdate(7001, mk(1, "reply from bot as agent"));
 const mtPulled = store.pullUpdates(7001, 0);
 check("MTProto update buffered + pulled by cursor", mtPulled.length === 1 && mtPulled[0]!.message?.text === "reply from bot as agent");
+
+const snap1 = store.upsertMessageSnapshot({
+  id: "1",
+  peerId: 7001,
+  messageId: 1,
+  role: "agent",
+  text: "partial",
+  status: "streaming",
+  date: 1730000000,
+});
+const snap2 = store.upsertMessageSnapshot({
+  id: "1",
+  peerId: 7001,
+  messageId: 1,
+  role: "agent",
+  text: "final",
+  status: "complete",
+  date: 1730000000,
+});
+const snapList = store.listMessageSnapshots(7001, 0);
+check("message snapshot upsert keeps one row", snapList.length === 1 && snapList[0]!.text === "final");
+check("message snapshot cursor advances on change", snap1.message.cursor === 1 && snap2.message.cursor === 2);
+const helper = store.mergeSnapshotHelperItems(7001, 1, [{ type: "quick_replies", id: "h1", options: [{ label: "More", value: "Tell me more" }] }]);
+check("helper items merge into message snapshot", !!helper?.message.helperItems?.length && store.listMessageSnapshots(7001, 0)[0]!.helperItems?.[0]?.id === "h1");
 
 store.revokeSession("d1");
 check("revokeSession clears session string", store.getUserSession("d1")?.status === "revoked" && !store.getUserSession("d1")?.enc_session);

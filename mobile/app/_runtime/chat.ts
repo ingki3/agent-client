@@ -27,7 +27,8 @@ import {
 import type { BuddyId } from '@/domain/entities/Buddy';
 import type { Message } from '@/domain/entities/Message';
 import { BotApiClient } from '@/infrastructure/api/bot-api-client';
-import { relayClient } from '@/infrastructure/api/relayClient';
+import { relayClient, type RelayMessageSnapshot, type RelayStreamHandle } from '@/infrastructure/api/relayClient';
+import { readBase64, type PickedAttachment } from '@/infrastructure/attachments';
 import { createExpoSqliteDatabase } from '@/infrastructure/storage/adapters/expo-sqlite-adapter';
 import { applyMigrations, type Database } from '@/infrastructure/storage/database';
 import { BuddiesRepository } from '@/infrastructure/storage/repositories/buddies-repo';
@@ -42,6 +43,8 @@ let initialized = false;
 let depsRef: ChatUseCaseDeps | null = null;
 let bootedOffsets: Record<BuddyId, number> = {};
 const activePolls: Record<BuddyId, ReturnType<typeof setTimeout> | null> = {};
+const activeStreams: Record<BuddyId, RelayStreamHandle | null> = {};
+const pendingStreams = new Set<BuddyId>();
 
 function getDeps(): ChatUseCaseDeps {
   if (!depsRef) {
@@ -71,6 +74,7 @@ export function initChatRuntime(): void {
     botApi: new BotApiClient({ gateway: DEFAULT_GATEWAY }),
     relaySendMessage: (peerId, text, clientTag) => relayClient.sendAs(peerId, text, clientTag),
     relaySyncMessages: (peerId, sinceUpdateId, limit) => relayClient.syncMessages(peerId, sinceUpdateId, limit),
+    relaySyncMessageSnapshots: (peerId, sinceCursor, limit) => relayClient.syncMessageSnapshots(peerId, sinceCursor, limit),
     newClientMessageId: () => uuidv4(),
     now: () => Date.now(),
   };
@@ -156,6 +160,69 @@ export async function sendMessageFlow(
   return outcome;
 }
 
+export async function sendAttachmentFlow(
+  buddyId: BuddyId,
+  attachment: PickedAttachment,
+  caption = '',
+): Promise<Message> {
+  const deps = getDeps();
+  const createdAt = deps.now();
+  const clientMessageId = `local-media-${createdAt}-${Math.random().toString(36).slice(2, 8)}`;
+  const text = caption.trim();
+  const message: Message = {
+    id: null,
+    clientMessageId,
+    buddyId,
+    role: 'user',
+    text,
+    status: useNetworkStore.getState().isOnline ? 'sending' : 'failed',
+    createdAt,
+    traceId: null,
+    attachments: [{
+      kind: attachment.kind,
+      uri: attachment.uri,
+      name: attachment.name,
+      mime: attachment.mime,
+      ...(attachment.size !== undefined ? { size: attachment.size } : {}),
+    }],
+  };
+
+  deps.db.transaction(() => {
+    deps.messagesRepo.insert(message);
+  });
+  useChatStore.getState().appendMessage(message);
+
+  const peerId = Number(buddyId);
+  if (!useNetworkStore.getState().isOnline || !Number.isFinite(peerId)) {
+    useChatStore.getState().setStatus(clientMessageId, 'failed');
+    return { ...message, status: 'failed' };
+  }
+
+  try {
+    const dataBase64 = await readBase64(attachment.uri);
+    const payload = {
+      kind: attachment.kind,
+      fileName: attachment.name,
+      mime: attachment.mime,
+      dataBase64,
+    };
+    const messageId = await relayClient.sendMedia(peerId, text ? { ...payload, caption: text } : payload);
+    deps.db.transaction(() => {
+      deps.messagesRepo.updateServerId(clientMessageId, String(messageId));
+      deps.messagesRepo.updateStatus(clientMessageId, 'sent');
+    });
+    useChatStore.getState().setServerId(clientMessageId, String(messageId));
+    useChatStore.getState().setStatus(clientMessageId, 'sent');
+    return { ...message, id: String(messageId), status: 'sent' };
+  } catch {
+    deps.db.transaction(() => {
+      deps.messagesRepo.updateStatus(clientMessageId, 'failed');
+    });
+    useChatStore.getState().setStatus(clientMessageId, 'failed');
+    return { ...message, status: 'failed' };
+  }
+}
+
 export async function retryMessageFlow(
   clientMessageId: string,
 ): Promise<Awaited<ReturnType<typeof retryMessageUseCase>>> {
@@ -223,6 +290,7 @@ export function startPolling(buddyId: BuddyId): () => void {
       for (const msg of outcome.inserted) {
         useChatStore.getState().appendMessage(msg);
       }
+      startRelayStream(buddyId, outcome.newOffset);
       if (outcome.inserted.length > 0) {
         markBuddyRead(buddyId);
       }
@@ -237,7 +305,61 @@ export function startPolling(buddyId: BuddyId): () => void {
   return () => {
     cancelled = true;
     stopPolling(buddyId);
+    stopRelayStream(buddyId);
   };
+}
+
+function snapshotToMessage(snapshot: RelayMessageSnapshot, buddyId: BuddyId): Message {
+  const message: Message = {
+    id: String(snapshot.messageId),
+    clientMessageId: String(snapshot.messageId),
+    buddyId,
+    role: snapshot.role,
+    text: snapshot.text,
+    status: 'sent',
+    createdAt: snapshot.date * 1000,
+    traceId: null,
+  };
+  if (snapshot.preview) message.preview = snapshot.preview;
+  if (snapshot.helperItems) message.helperItems = snapshot.helperItems;
+  if (snapshot.inlineKeyboard !== undefined) message.inlineKeyboard = snapshot.inlineKeyboard;
+  if (snapshot.media) {
+    const attachment = { kind: snapshot.media.kind, uri: snapshot.media.url, name: snapshot.media.name, mime: snapshot.media.mime };
+    message.attachments = snapshot.media.size == null ? [attachment] : [{ ...attachment, size: snapshot.media.size }];
+  }
+  return message;
+}
+
+function startRelayStream(buddyId: BuddyId, sinceCursor: number): void {
+  if (activeStreams[buddyId] || pendingStreams.has(buddyId)) return;
+  const peerId = Number(buddyId);
+  if (!Number.isFinite(peerId)) return;
+  pendingStreams.add(buddyId);
+  void relayClient.openMessageStream(peerId, sinceCursor, (event) => {
+    if (event.type !== 'message_updated' && event.type !== 'helper_updated') return;
+    if (event.message.role !== 'agent') return;
+    useChatStore.getState().appendMessage(snapshotToMessage(event.message, buddyId));
+    markBuddyRead(buddyId);
+  }).then((handle) => {
+    pendingStreams.delete(buddyId);
+    if (!handle) return;
+    if (!activePolls[buddyId]) {
+      handle.close();
+      return;
+    }
+    activeStreams[buddyId] = handle;
+  }).catch(() => {
+    pendingStreams.delete(buddyId);
+  });
+}
+
+function stopRelayStream(buddyId: BuddyId): void {
+  pendingStreams.delete(buddyId);
+  const handle = activeStreams[buddyId];
+  if (handle) {
+    handle.close();
+    activeStreams[buddyId] = null;
+  }
 }
 
 function stopPolling(buddyId: BuddyId): void {
@@ -260,5 +382,8 @@ export function _resetChatRuntime(): void {
   bootedOffsets = {};
   for (const id of Object.keys(activePolls)) {
     stopPolling(id);
+  }
+  for (const id of Object.keys(activeStreams)) {
+    stopRelayStream(id);
   }
 }

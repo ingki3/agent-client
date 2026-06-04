@@ -56,4 +56,6 @@ export const SecureKeys = {
   deviceId: "device_id_v1",
   /** Bearer secret for the relay (also gates the MTProto session it holds). */
   deviceSecret: "device_secret_v1",
+  /** User override for relay server base URL. */
+  relayBase: "relay_base_v1",
 } as const;

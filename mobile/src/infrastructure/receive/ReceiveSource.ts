@@ -93,6 +93,15 @@ class RelayPullSource implements ReceiveSource {
   }
 }
 
-export const receiveSource: ReceiveSource = config.relayBase
-  ? new RelayPullSource()
-  : new NullReceiveSource();
+const relaySource = new RelayPullSource();
+const nullSource = new NullReceiveSource();
+
+function currentSource(): ReceiveSource {
+  return config.relayBase ? relaySource : nullSource;
+}
+
+export const receiveSource: ReceiveSource = {
+  start: (buddyId) => currentSource().start(buddyId),
+  stop: (buddyId) => currentSource().stop(buddyId),
+  catchUp: (buddyId) => currentSource().catchUp(buddyId),
+};

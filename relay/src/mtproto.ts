@@ -23,7 +23,8 @@ import { store } from "./store.js";
 import { sendPushes } from "./push.js";
 import { log } from "./log.js";
 import { suggestHelperItems } from "./helper.js";
-import type { TgUpdate, LinkPreview, AgentPayload, InlineKeyboard, InlineKeyboardButton } from "./types.js";
+import { messageStreams } from "./streams.js";
+import type { TgUpdate, LinkPreview, AgentPayload, InlineKeyboard, InlineKeyboardButton, NormalizedMessage } from "./types.js";
 
 /** big-integer Integer or native value → JS number (Telegram ids fit in 2^53 for users). */
 function idToNum(x: unknown): number {
@@ -242,6 +243,7 @@ function scheduleHelper(params: {
   if (existing) clearTimeout(existing);
   if (!helperEligibleText(params.text)) {
     helperTimers.delete(key);
+    log.info(`helper skipped peer=${params.peerId} msg=${params.messageId} reason=ineligible text_len=${params.text.trim().length}`);
     return;
   }
   helperTimers.set(
@@ -259,8 +261,11 @@ function scheduleHelper(params: {
           agentText: params.text,
           recentMessages: recent,
         });
-        if (!helperItems.length) return;
-        store.insertUpdate(params.peerId, {
+        if (!helperItems.length) {
+          log.info(`helper skipped peer=${params.peerId} msg=${params.messageId} reason=no_items text_len=${params.text.length}`);
+          return;
+        }
+        const helperUpdate: TgUpdate = {
           update_id: params.baseUpdateId + 999,
           message: {
             message_id: params.messageId,
@@ -269,7 +274,13 @@ function scheduleHelper(params: {
             from: { id: params.peerId, is_bot: true, first_name: params.peerTitle },
             helper_items: helperItems,
           },
-        });
+        };
+        store.insertUpdate(params.peerId, helperUpdate);
+        const merged = store.mergeSnapshotHelperItems(params.peerId, params.messageId, helperItems);
+        if (merged?.changed) {
+          messageStreams.publish(params.peerId, { type: "helper_updated", message: merged.message });
+        }
+        log.info(`helper generated peer=${params.peerId} msg=${params.messageId} items=${helperItems.length}`);
       })().catch((e) => log.warn(`helper async insert failed: ${rpcError(e)}`));
     }, 14000),
   );
@@ -364,6 +375,63 @@ function updateFromTelegramMessage(params: {
   };
 }
 
+function snapshotStatus(text: string): NormalizedMessage["status"] {
+  const trimmed = text.trim();
+  if (!trimmed || /^[.…·\-\s]+$/.test(trimmed)) return "streaming";
+  if (/^(?:진행 상황|🛠|💻|📚\s*skill_view:|Transcript:)/i.test(trimmed)) return "streaming";
+  if (looksCompleteForHelper(trimmed)) return "complete";
+  // Short conversational replies often do not pass helper eligibility, but they are still
+  // complete message snapshots for DB sync.
+  if (trimmed.length < 240) return "complete";
+  return "streaming";
+}
+
+function snapshotFromUpdate(update: TgUpdate): Omit<NormalizedMessage, "cursor" | "updatedAt"> | null {
+  const message = update.message ?? update.edited_message;
+  if (!message) return null;
+  const text = message.text ?? "";
+  return {
+    id: String(message.message_id),
+    peerId: message.chat.id,
+    messageId: message.message_id,
+    role: message.outgoing ? "user" : "agent",
+    text,
+    status: snapshotStatus(text),
+    date: message.date,
+    ...(message.preview ? { preview: message.preview } : {}),
+    ...(message.media ? { media: message.media } : {}),
+    ...(message.helper_items ? { helperItems: message.helper_items } : {}),
+    ...(message.inline_keyboard !== undefined ? { inlineKeyboard: message.inline_keyboard } : {}),
+  };
+}
+
+function upsertAndPublishSnapshot(
+  update: TgUpdate,
+  eventType: "message_updated" | "helper_updated" = "message_updated",
+  opts: { publish?: boolean; updateComplete?: boolean } = {},
+): NormalizedMessage | null {
+  const shouldPublish = opts.publish !== false;
+  const message = update.message ?? update.edited_message;
+  if (message?.helper_items && message.text === undefined) {
+    const merged = store.mergeSnapshotHelperItems(message.chat.id, message.message_id, message.helper_items);
+    if (shouldPublish && merged?.changed) {
+      messageStreams.publish(message.chat.id, { type: "helper_updated", message: merged.message });
+    }
+    return merged?.message ?? null;
+  }
+  const snapshot = snapshotFromUpdate(update);
+  if (!snapshot) return null;
+  const existing = store.getMessageSnapshot(snapshot.peerId, snapshot.messageId);
+  if (opts.updateComplete === false && existing) {
+    if (existing.status === "complete" || !existing.text.trim()) return existing;
+  }
+  const result = store.upsertMessageSnapshot(snapshot);
+  if (shouldPublish && result.changed) {
+    messageStreams.publish(snapshot.peerId, { type: eventType, message: result.message });
+  }
+  return result.message;
+}
+
 /** Classify a message's media (photo/document) so the app can render received files. */
 function classifyMedia(msg: any): MediaDescriptor | null {
   if (msg.photo) return { kind: "image", name: "photo.jpg", mime: "image/jpeg" };
@@ -404,6 +472,7 @@ function attachReceiver(deviceId: string, client: TelegramClient): void {
       const text = update.message.text ?? "";
       const inlineKeyboard = update.message.inline_keyboard ?? undefined;
       store.insertUpdate(peerId, update);
+      upsertAndPublishSnapshot(update);
       if (!outgoing && inlineKeyboard) {
         cancelHelper(deviceId, peerId);
       } else if (!outgoing && text.trim()) {
@@ -678,11 +747,23 @@ export const mtproto = {
     const request: Record<string, unknown> = { limit };
     if (minMessageId > 0) request.minId = minMessageId;
     const messages = (await client.getMessages(target, request as never)) as unknown as Array<any>;
-    const updates = messages
+    const historyUpdates = messages
       .map((msg) => updateFromTelegramMessage({ deviceId, peer, msg }))
       .filter((u): u is TgUpdate => !!u && u.update_id >= (opts.sinceUpdateId ?? 0))
       .sort((a, b) => a.update_id - b.update_id);
-    for (const update of updates) store.insertUpdate(peerId, update);
+    const bufferedUpdates = store.pullUpdates(peerId, opts.sinceUpdateId ?? 0, limit);
+    const updatesById = new Map<number, TgUpdate>();
+    for (const update of bufferedUpdates) updatesById.set(update.update_id, update);
+    // Prefer live history for the base update id because it reflects Telegram's current
+    // message body; keep buffered edited/progress updates that history cannot represent.
+    for (const update of historyUpdates) updatesById.set(update.update_id, update);
+    const updates = [...updatesById.values()]
+      .sort((a, b) => a.update_id - b.update_id)
+      .slice(0, limit);
+    for (const update of updates) {
+      store.insertUpdate(peerId, update);
+      upsertAndPublishSnapshot(update, "message_updated", { publish: false, updateComplete: false });
+    }
     return updates;
   },
 
