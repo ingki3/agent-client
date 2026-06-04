@@ -15,6 +15,7 @@ import { reconcileLoops, loopCount } from "./poller.js";
 import { mtproto } from "./mtproto.js";
 import { log } from "./log.js";
 import { createTtsAudio, createTtsScript, resolveTtsFile } from "./tts.js";
+import { messageStreams } from "./streams.js";
 import type {
   RegisterBody,
   AuthStartBody,
@@ -107,6 +108,10 @@ function authDevice(req: { headers: Record<string, unknown> }, deviceId: string)
   const header = String(req.headers["authorization"] ?? "");
   const secret = header.startsWith("Bearer ") ? header.slice(7) : "";
   return secretMatches(secret, dev.device_secret_hash);
+}
+
+function sseData(event: unknown): string {
+  return `data: ${JSON.stringify(event)}\n\n`;
 }
 
 function trimText(value: unknown, max: number): unknown {
@@ -436,16 +441,58 @@ app.post("/messages/sync", async (req, reply) => {
   if (!body?.deviceId || !Number.isFinite(body.peerId)) return reply.code(400).send({ ok: false, error: "bad request" });
   if (!authDevice(req, body.deviceId)) return reply.code(401).send({ ok: false, error: "unauthorized" });
   try {
+    const since = Number.isFinite(body.sinceCursor)
+      ? body.sinceCursor!
+      : Number.isFinite(body.sinceUpdateId)
+        ? body.sinceUpdateId!
+        : 0;
+    const limit = Number.isFinite(body.limit) ? body.limit! : 50;
     const updates = await mtproto.syncMessages(body.deviceId, body.peerId, {
       sinceUpdateId: Number.isFinite(body.sinceUpdateId) ? body.sinceUpdateId : 0,
-      limit: Number.isFinite(body.limit) ? body.limit : 50,
+      limit,
     });
-    const cursor = updates.length ? updates[updates.length - 1]!.update_id + 1 : (body.sinceUpdateId ?? 0);
-    log.info(`messages sync device=${body.deviceId} peer=${body.peerId} since=${body.sinceUpdateId ?? 0} count=${updates.length}`);
-    return reply.send({ ok: true, updates, cursor });
+    const messages = store.listMessageSnapshots(body.peerId, since, limit);
+    const cursor = messages.length ? messages[messages.length - 1]!.cursor + 1 : since;
+    const legacyCursor = updates.length ? updates[updates.length - 1]!.update_id + 1 : (body.sinceUpdateId ?? 0);
+    log.info(`messages sync device=${body.deviceId} peer=${body.peerId} since=${since} updates=${updates.length} messages=${messages.length}`);
+    return reply.send({ ok: true, updates, messages, cursor, legacyCursor });
   } catch (e) {
     return mtprotoErr(reply, e);
   }
+});
+
+app.get("/messages/stream", async (req, reply) => {
+  const q = req.query as { deviceId?: string; peerId?: string; since?: string };
+  const deviceId = q.deviceId ?? "";
+  const peerId = Number(q.peerId);
+  const since = Number(q.since ?? 0);
+  if (!deviceId || !Number.isFinite(peerId)) return reply.code(400).send({ ok: false, error: "bad request" });
+  if (!authDevice(req, deviceId)) return reply.code(401).send({ ok: false, error: "unauthorized" });
+  if (!store.getAccountPeer(deviceId, peerId)) return reply.code(404).send({ ok: false, error: "peer not found" });
+
+  reply.hijack();
+  const res = reply.raw;
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    "Connection": "keep-alive",
+  });
+  const initial = store.listMessageSnapshots(peerId, since, 100, { legacyCursorFallback: false });
+  const cursor = initial.length ? initial[initial.length - 1]!.cursor + 1 : since;
+  res.write(sseData({ type: "connected", peerId, cursor }));
+  for (const message of initial) {
+    res.write(sseData({ type: "message_updated", message }));
+  }
+  const unsubscribe = messageStreams.subscribe(peerId, (event) => {
+    res.write(sseData(event));
+  });
+  const heartbeat = setInterval(() => {
+    res.write(": heartbeat\n\n");
+  }, 25000);
+  req.raw.on("close", () => {
+    clearInterval(heartbeat);
+    unsubscribe();
+  });
 });
 
 app.post("/send", async (req, reply) => {

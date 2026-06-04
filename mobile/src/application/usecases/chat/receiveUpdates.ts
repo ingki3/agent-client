@@ -12,7 +12,7 @@
 import type { BuddyId } from '@/domain/entities/Buddy';
 import type { Message } from '@/domain/entities/Message';
 
-import { BuddyNotFoundError, type ChatUseCaseDeps, MissingBotTokenError } from './types';
+import { BuddyNotFoundError, type ChatUseCaseDeps, MissingBotTokenError, type RelayMessageSnapshot } from './types';
 
 export interface ReceiveUpdatesInput {
   buddyId: BuddyId;
@@ -43,8 +43,13 @@ export async function receiveUpdates(
   }
 
   const peerId = Number(buddy.id);
+  const useRelaySnapshotSync = !token && deps.relaySyncMessageSnapshots && Number.isFinite(peerId);
   const useRelaySync = !token && deps.relaySyncMessages && Number.isFinite(peerId);
-  if (!token && !useRelaySync) throw new MissingBotTokenError(buddy.id);
+  if (!token && !useRelaySync && !useRelaySnapshotSync) throw new MissingBotTokenError(buddy.id);
+
+  if (useRelaySnapshotSync) {
+    return receiveSnapshotSync(deps, buddy.id, peerId, input.offset);
+  }
 
   const updates = useRelaySync
     ? await deps.relaySyncMessages!(peerId, input.offset, 50)
@@ -55,7 +60,6 @@ export async function receiveUpdates(
       });
 
   const inserted: Message[] = [];
-  const seenServerIds = new Set<string>();
   let newOffset = input.offset;
   let typing = false;
 
@@ -71,8 +75,6 @@ export async function receiveUpdates(
       if (String(tg.chat.id) !== buddy.id) continue;
 
       const serverId = String(tg.message_id);
-      if (seenServerIds.has(serverId)) continue;
-      seenServerIds.add(serverId);
       const richFields: Partial<Pick<Message, 'preview' | 'helperItems' | 'inlineKeyboard' | 'attachments' | 'text'>> = {};
       if (tg.preview) richFields.preview = tg.preview;
       if (tg.helper_items) richFields.helperItems = tg.helper_items;
@@ -109,4 +111,60 @@ export async function receiveUpdates(
   });
 
   return { newOffset, inserted, typing };
+}
+
+async function receiveSnapshotSync(
+  deps: ChatUseCaseDeps,
+  buddyId: BuddyId,
+  peerId: number,
+  offset: number,
+): Promise<ReceiveUpdatesOutcome> {
+  const result = await deps.relaySyncMessageSnapshots!(peerId, offset, 50);
+  const inserted: Message[] = [];
+
+  deps.db.transaction(() => {
+    for (const snapshot of result.messages) {
+      if (String(snapshot.peerId) !== buddyId) continue;
+      const serverId = String(snapshot.messageId);
+      const richFields: Partial<Pick<Message, 'preview' | 'helperItems' | 'inlineKeyboard' | 'attachments' | 'text'>> = snapshotRichFields(snapshot);
+      const existing = deps.messagesRepo.findByServerId(serverId) ?? deps.messagesRepo.findByClientMessageId(serverId);
+      if (existing) {
+        const merged = deps.messagesRepo.mergeRemoteFields(serverId, richFields);
+        if (merged) inserted.push(merged);
+        continue;
+      }
+      const message: Message = {
+        id: serverId,
+        clientMessageId: serverId,
+        buddyId,
+        role: snapshot.role,
+        text: snapshot.text,
+        status: 'sent',
+        createdAt: snapshot.date * 1000,
+        traceId: null,
+      };
+      if (richFields.preview) message.preview = richFields.preview;
+      if (richFields.helperItems) message.helperItems = richFields.helperItems;
+      if (richFields.inlineKeyboard !== undefined) message.inlineKeyboard = richFields.inlineKeyboard;
+      if (richFields.attachments) message.attachments = richFields.attachments;
+      const insertedMessage = deps.messagesRepo.insertRemoteIfAbsent(message);
+      if (insertedMessage) inserted.push(insertedMessage);
+    }
+  });
+
+  return { newOffset: result.cursor, inserted, typing: false };
+}
+
+function snapshotRichFields(snapshot: RelayMessageSnapshot): Partial<Pick<Message, 'preview' | 'helperItems' | 'inlineKeyboard' | 'attachments' | 'text'>> {
+  const richFields: Partial<Pick<Message, 'preview' | 'helperItems' | 'inlineKeyboard' | 'attachments' | 'text'>> = {
+    text: snapshot.text,
+  };
+  if (snapshot.preview) richFields.preview = snapshot.preview;
+  if (snapshot.helperItems) richFields.helperItems = snapshot.helperItems;
+  if (snapshot.inlineKeyboard !== undefined) richFields.inlineKeyboard = snapshot.inlineKeyboard;
+  if (snapshot.media) {
+    const attachment = { kind: snapshot.media.kind, uri: snapshot.media.url, name: snapshot.media.name, mime: snapshot.media.mime };
+    richFields.attachments = snapshot.media.size == null ? [attachment] : [{ ...attachment, size: snapshot.media.size }];
+  }
+  return richFields;
 }

@@ -47,6 +47,28 @@ export type TgUpdate = {
   edited_message?: TgMessage;
 };
 
+export type NormalizedMessage = {
+  id: string;
+  peerId: number;
+  messageId: number;
+  role: "user" | "agent";
+  text: string;
+  status: "streaming" | "complete";
+  date: number;
+  updatedAt: number;
+  cursor: number;
+  preview?: LinkPreview;
+  media?: TgMessage["media"];
+  helperItems?: HelperItem[];
+  inlineKeyboard?: InlineKeyboard | null;
+};
+
+export type MessageStreamEvent =
+  | { type: "connected"; peerId: number; cursor: number }
+  | { type: "message_updated"; message: NormalizedMessage }
+  | { type: "helper_updated"; message: NormalizedMessage }
+  | { type: "error"; message: string };
+
 // botToken is optional: MTProto peers (user-account path) register a subscription with no
 // token (the relay's GramJS client receives for them — no per-bot getUpdates loop).
 export type RegisterBot = { buddyId: string; botToken?: string; botId: number };
@@ -65,7 +87,7 @@ export type AuthCodeBody = { deviceId: string; code: string };
 export type Auth2faBody = { deviceId: string; password: string };
 export type PeerResolveBody = { deviceId: string; username: string };
 export type PeerRemoveBody = { deviceId: string; peerId: number };
-export type MessageSyncBody = { deviceId: string; peerId: number; sinceUpdateId?: number; limit?: number };
+export type MessageSyncBody = { deviceId: string; peerId: number; sinceUpdateId?: number; sinceCursor?: number; limit?: number };
 export type SendBody = { deviceId: string; peerId: number; text: string; clientTag?: string; replyTo?: number };
 
 export type AgentPayload =

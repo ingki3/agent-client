@@ -32,6 +32,7 @@ import { useBuddiesStore } from '@/application/stores/buddies-store';
 import { useChatStore } from '@/application/stores/chat-store';
 import { useNetworkStore } from '@/application/stores/network-store';
 import type { Message } from '@/domain/entities/Message';
+import { getLocationUrl, pickDocument } from '@/infrastructure/attachments';
 import { ChatBubbleV2, OfflineBanner } from '@/ui/chat';
 import { useTheme } from '@/ui/theme/ThemeProvider';
 import { fontSize, radius, space, touch } from '@/ui/theme/tokens';
@@ -42,6 +43,7 @@ import {
   initChatRuntime,
   markBuddyRead,
   retryMessageFlow,
+  sendAttachmentFlow,
   sendMessageFlow,
   startPolling,
 } from '../../_runtime/chat';
@@ -69,8 +71,11 @@ export default function ChatScreen() {
   const [keyboardInset, setKeyboardInset] = useState(0);
   const [composerHeight, setComposerHeight] = useState(0);
   const [sending, setSending] = useState(false);
+  const [attaching, setAttaching] = useState(false);
   const listRef = useRef<FlashListRef<Message>>(null);
   const scrollRetryTimers = useRef<ReturnType<typeof setTimeout>[]>([]);
+  const nearBottomRef = useRef(true);
+  const prevMessageCountRef = useRef(0);
 
   const scrollToLatest = useCallback((animated: boolean) => {
     for (const timer of scrollRetryTimers.current) clearTimeout(timer);
@@ -105,9 +110,14 @@ export default function ChatScreen() {
 
   // Auto-scroll to bottom when new messages arrive (S-11 자동 스크롤).
   useEffect(() => {
-    if (messages.length === 0) return;
-    scrollToLatest(true);
-  }, [messages.length, scrollToLatest]);
+    const prev = prevMessageCountRef.current;
+    prevMessageCountRef.current = messages.length;
+    if (messages.length === 0 || messages.length <= prev) return;
+    const latest = messages[messages.length - 1];
+    if (nearBottomRef.current || latest?.role === 'user') {
+      scrollToLatest(true);
+    }
+  }, [messages, scrollToLatest]);
 
   useEffect(() => {
     if (Platform.OS !== 'android') return undefined;
@@ -161,6 +171,64 @@ export default function ChatScreen() {
       setSending(false);
     }
   }, [appendMessage, buddyId, draft, isOnline, sending]);
+
+  const handleAttachFiles = useCallback(async () => {
+    if (!buddyId || attaching) return;
+    setAttaching(true);
+    try {
+      const items = await pickDocument();
+      if (!items.length) return;
+      const caption = draft.trim();
+      if (caption) setDraft('');
+      for (let index = 0; index < items.length; index += 1) {
+        await sendAttachmentFlow(buddyId, items[index]!, index === 0 ? caption : '');
+      }
+    } catch {
+      Alert.alert('첨부 실패', '파일을 전송하지 못했습니다. relay 연결을 확인해 주세요.');
+    } finally {
+      setAttaching(false);
+    }
+  }, [attaching, buddyId, draft]);
+
+  const handleShareLocation = useCallback(async () => {
+    if (!buddyId || attaching) return;
+    setAttaching(true);
+    try {
+      const url = await getLocationUrl();
+      if (!url) {
+        Alert.alert('위치 전송 실패', '위치 권한을 허용했는지 확인해 주세요.');
+        return;
+      }
+      await sendMessageFlow(buddyId, url);
+    } catch {
+      Alert.alert('위치 전송 실패', '현재 위치를 전송하지 못했습니다.');
+    } finally {
+      setAttaching(false);
+    }
+  }, [attaching, buddyId]);
+
+  const handleOpenAttachMenu = useCallback(() => {
+    if (attaching) return;
+    if (Platform.OS === 'ios') {
+      ActionSheetIOS.showActionSheetWithOptions(
+        {
+          options: ['파일 첨부', '위치 보내기', '취소'],
+          cancelButtonIndex: 2,
+          title: '첨부',
+        },
+        (idx) => {
+          if (idx === 0) void handleAttachFiles();
+          else if (idx === 1) void handleShareLocation();
+        },
+      );
+      return;
+    }
+    Alert.alert('첨부', undefined, [
+      { text: '파일 첨부', onPress: () => void handleAttachFiles() },
+      { text: '위치 보내기', onPress: () => void handleShareLocation() },
+      { text: '취소', style: 'cancel' },
+    ]);
+  }, [attaching, handleAttachFiles, handleShareLocation]);
 
   const handleLongPress = useCallback(
     (message: Message) => {
@@ -222,7 +290,9 @@ export default function ChatScreen() {
     <SafeAreaView style={{ flex: 1, backgroundColor: color('surface') }} edges={['bottom']}>
       <Stack.Screen
         options={{
+          headerTitleAlign: 'center',
           headerTitle: () => <HeaderTitle buddy={buddy} isOnline={isOnline} />,
+          headerRight: () => <View style={{ width: touch.min }} />,
           headerBackTitle: '뒤로',
         }}
       />
@@ -238,6 +308,12 @@ export default function ChatScreen() {
           ref={listRef}
           data={messages}
           keyExtractor={(m) => m.clientMessageId}
+          onScroll={(event) => {
+            const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
+            const distanceFromBottom = contentSize.height - (contentOffset.y + layoutMeasurement.height);
+            nearBottomRef.current = distanceFromBottom < 96;
+          }}
+          scrollEventThrottle={100}
           renderItem={({ item }) => (
             <ChatBubbleV2 message={item} onLongPress={handleLongPress} />
           )}
@@ -285,15 +361,36 @@ export default function ChatScreen() {
               : null),
           }}
         >
+          <Pressable
+            onPress={handleOpenAttachMenu}
+            disabled={attaching}
+            accessibilityRole="button"
+            accessibilityLabel="첨부"
+            style={{
+              width: touch.min,
+              height: touch.min,
+              borderRadius: radius.full,
+              backgroundColor: color('surface-elevated'),
+              alignItems: 'center',
+              justifyContent: 'center',
+              opacity: attaching ? 0.6 : 1,
+            }}
+          >
+            <Text style={{ color: color('text-primary'), fontSize: fontSize['title-sm'] }}>＋</Text>
+          </Pressable>
+
           <View
             style={{
               flex: 1,
+              minHeight: touch.min,
+              maxHeight: 96,
               backgroundColor: color('surface-elevated'),
               borderRadius: radius.xl,
               paddingHorizontal: space[3],
-              paddingVertical: space[2],
+              paddingVertical: 0,
               borderWidth: 1,
               borderColor: color('border'),
+              justifyContent: 'center',
             }}
           >
             <TextInput
@@ -305,12 +402,14 @@ export default function ChatScreen() {
               style={{
                 fontSize: fontSize.body,
                 color: color('text-primary'),
-                maxHeight: 120,
-                minHeight: 24,
+                maxHeight: 94,
+                minHeight: touch.min - 2,
+                paddingVertical: 0,
+                includeFontPadding: false,
               }}
               editable
               selectTextOnFocus={false}
-              textAlignVertical="top"
+              textAlignVertical="center"
               returnKeyType="send"
               blurOnSubmit={false}
             />
@@ -349,7 +448,7 @@ function HeaderTitle({
 }) {
   const { color } = useTheme();
   return (
-    <View style={{ flexDirection: 'column', alignItems: 'center' }}>
+    <View style={{ flexDirection: 'column', alignItems: 'center', minWidth: 180 }}>
       <Text
         style={{
           color: color('text-primary'),
@@ -365,6 +464,7 @@ function HeaderTitle({
           color: isOnline ? color('success') : color('offline'),
           fontSize: fontSize.caption,
         }}
+        numberOfLines={1}
       >
         {isOnline ? '● 연결됨' : '○ 오프라인'}
         {buddy.username ? ` · @${buddy.username}` : ''}

@@ -58,6 +58,21 @@ function stringifyJson(value: unknown): string | null {
   return value == null ? null : JSON.stringify(value);
 }
 
+function stableValue(value: unknown): unknown {
+  if (value === undefined) return null;
+  if (value === null || typeof value !== 'object') return value;
+  if (Array.isArray(value)) return value.map(stableValue);
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, entry]) => [key, stableValue(entry)]),
+  );
+}
+
+function sameJson(a: unknown, b: unknown): boolean {
+  return JSON.stringify(stableValue(a)) === JSON.stringify(stableValue(b));
+}
+
 export class MessagesRepository {
   constructor(private readonly db: Database) {}
 
@@ -123,25 +138,42 @@ export class MessagesRepository {
     const existing = this.findByServerId(serverId);
     if (!existing) return null;
     const next: Message = { ...existing };
-    if (fields.text && fields.text !== existing.text) next.text = fields.text;
-    if (fields.preview) next.preview = fields.preview;
-    if (fields.helperItems) next.helperItems = fields.helperItems;
-    if (fields.inlineKeyboard !== undefined) next.inlineKeyboard = fields.inlineKeyboard;
-    if (fields.attachments) next.attachments = fields.attachments;
+    let changed = false;
+    if (fields.text !== undefined && fields.text !== existing.text) {
+      next.text = fields.text;
+      changed = true;
+    }
+    if (fields.preview && !sameJson(fields.preview, existing.preview)) {
+      next.preview = fields.preview;
+      changed = true;
+    }
+    if (fields.helperItems && !sameJson(fields.helperItems, existing.helperItems)) {
+      next.helperItems = fields.helperItems;
+      changed = true;
+    }
+    if (fields.inlineKeyboard !== undefined && !sameJson(fields.inlineKeyboard, existing.inlineKeyboard)) {
+      next.inlineKeyboard = fields.inlineKeyboard;
+      changed = true;
+    }
+    if (fields.attachments && !sameJson(fields.attachments, existing.attachments)) {
+      next.attachments = fields.attachments;
+      changed = true;
+    }
+    if (!changed) return null;
     this.db.run(
       `UPDATE messages
        SET text = ?,
-           preview_json = COALESCE(?, preview_json),
-           helper_items_json = COALESCE(?, helper_items_json),
+           preview_json = ?,
+           helper_items_json = ?,
            inline_keyboard_json = ?,
-           attachments_json = COALESCE(?, attachments_json)
+           attachments_json = ?
        WHERE id = ?`,
       [
         next.text,
-        stringifyJson(fields.preview),
-        stringifyJson(fields.helperItems),
-        stringifyJson(fields.inlineKeyboard),
-        stringifyJson(fields.attachments),
+        stringifyJson(next.preview),
+        stringifyJson(next.helperItems),
+        stringifyJson(next.inlineKeyboard),
+        stringifyJson(next.attachments),
         serverId,
       ],
     );

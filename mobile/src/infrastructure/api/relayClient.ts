@@ -13,7 +13,7 @@ import { config } from "../config";
 import { secureStore, SecureKeys } from "../storage/secureStore";
 import { uid } from "@/lib/id";
 import type { TgUpdate } from "./telegramBotApi";
-import type { FormValue, LinkPreview, TtsMode } from "@/domain/entities";
+import type { FormValue, HelperItem, InlineKeyboard, LinkPreview, TtsMode } from "@/domain/entities";
 
 // botToken is optional: MTProto peers register with no token (the relay's user-account
 // client receives for them — no per-bot getUpdates loop).
@@ -52,6 +52,35 @@ export type InlineKeyboardCallbackResult = {
   alert?: boolean;
   url?: string;
 };
+
+export type RelayMessageSnapshot = {
+  id: string;
+  peerId: number;
+  messageId: number;
+  role: "user" | "agent";
+  text: string;
+  status: "streaming" | "complete";
+  date: number;
+  updatedAt: number;
+  cursor: number;
+  preview?: LinkPreview;
+  media?: { kind: string; name: string; mime: string; size?: number; url: string };
+  helperItems?: HelperItem[];
+  inlineKeyboard?: InlineKeyboard | null;
+};
+
+export type RelaySnapshotSyncResult = {
+  messages: RelayMessageSnapshot[];
+  cursor: number;
+};
+
+export type RelayMessageStreamEvent =
+  | { type: "connected"; peerId: number; cursor: number }
+  | { type: "message_updated"; message: RelayMessageSnapshot }
+  | { type: "helper_updated"; message: RelayMessageSnapshot }
+  | { type: "error"; message: string };
+
+export type RelayStreamHandle = { close: () => void };
 
 const RELAY_REQUEST_TIMEOUT_MS = 15_000;
 const RELAY_TTS_REQUEST_TIMEOUT_MS = 120_000;
@@ -148,7 +177,26 @@ function normalizeRelayUpdates(updates: TgUpdate[]): TgUpdate[] {
   });
 }
 
+function normalizeRelaySnapshots(messages: RelayMessageSnapshot[]): RelayMessageSnapshot[] {
+  return messages.map((message) => {
+    const normalized = { ...message };
+    if (normalized.preview?.image) {
+      const image = absoluteRelayUrl(normalized.preview.image);
+      normalized.preview = image ? { ...normalized.preview, image } : { ...normalized.preview };
+    }
+    if (normalized.media?.url) {
+      normalized.media = { ...normalized.media, url: absoluteRelayUrl(normalized.media.url) ?? normalized.media.url };
+    }
+    return normalized;
+  });
+}
+
 export const relayClient = {
+  async health(): Promise<boolean> {
+    const body = await getJson("/health");
+    return !!body?.ok;
+  },
+
   /** Register device + peers/bots. Persists the returned deviceSecret on first call. */
   async register(expoPushToken: string, bots: RelayBot[]): Promise<boolean> {
     if (!config.relayBase || bots.length === 0) return false;
@@ -319,6 +367,73 @@ export const relayClient = {
     const body = await postJson("/messages/sync", { deviceId: id, peerId, sinceUpdateId, limit });
     if (!body?.ok || !Array.isArray(body.updates)) return [];
     return normalizeRelayUpdates(body.updates as TgUpdate[]);
+  },
+
+  async syncMessageSnapshots(peerId: number, sinceCursor = 0, limit = 50): Promise<RelaySnapshotSyncResult> {
+    if (!config.relayBase || !Number.isFinite(peerId)) return { messages: [], cursor: sinceCursor };
+    const id = await secureStore.get(SecureKeys.deviceId);
+    if (!id) return { messages: [], cursor: sinceCursor };
+    const body = await postJson("/messages/sync", { deviceId: id, peerId, sinceCursor, limit });
+    if (!body?.ok || !Array.isArray(body.messages)) return { messages: [], cursor: sinceCursor };
+    return {
+      messages: normalizeRelaySnapshots(body.messages as RelayMessageSnapshot[]),
+      cursor: typeof body.cursor === "number" ? body.cursor : sinceCursor,
+    };
+  },
+
+  async openMessageStream(
+    peerId: number,
+    sinceCursor: number,
+    onEvent: (event: RelayMessageStreamEvent) => void,
+  ): Promise<RelayStreamHandle | null> {
+    if (!config.relayBase || !Number.isFinite(peerId)) return null;
+    const id = await secureStore.get(SecureKeys.deviceId);
+    if (!id) return null;
+    const headers = await authHeader();
+    const xhr = new XMLHttpRequest();
+    let lastIndex = 0;
+    let closed = false;
+    const url = `${config.relayBase}/messages/stream?deviceId=${encodeURIComponent(id)}&peerId=${peerId}&since=${sinceCursor}`;
+    xhr.open("GET", url);
+    for (const [key, value] of Object.entries(headers)) xhr.setRequestHeader(key, value);
+    xhr.setRequestHeader("Accept", "text/event-stream");
+
+    const flush = () => {
+      const text = xhr.responseText.slice(lastIndex);
+      lastIndex = xhr.responseText.length;
+      for (const block of text.split("\n\n")) {
+        if (!block.trim() || block.trim().startsWith(":")) continue;
+        const line = block.split("\n").find((l) => l.startsWith("data:"));
+        if (!line) continue;
+        const raw = line.slice(5).trim();
+        if (!raw) continue;
+        try {
+          const event = JSON.parse(raw) as RelayMessageStreamEvent;
+          if ((event.type === "message_updated" || event.type === "helper_updated") && event.message) {
+            event.message = normalizeRelaySnapshots([event.message])[0]!;
+          }
+          onEvent(event);
+        } catch {
+          onEvent({ type: "error", message: "stream_parse_failed" });
+        }
+      }
+    };
+
+    xhr.onprogress = flush;
+    xhr.onload = () => {
+      if (!closed) flush();
+    };
+    xhr.onerror = () => {
+      if (!closed) onEvent({ type: "error", message: "stream_error" });
+    };
+    xhr.send();
+
+    return {
+      close: () => {
+        closed = true;
+        xhr.abort();
+      },
+    };
   },
 
   /** Send `text` to `peerId` as the user (optionally as a reply). Returns the sent message id. */

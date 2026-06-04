@@ -8,6 +8,7 @@
  * in by overriding `apiBase`/`gateway` via Expo `extra` (app.config) or at runtime.
  */
 import Constants from "expo-constants";
+import { secureStore, SecureKeys } from "./storage/secureStore";
 
 type Extra = {
   gateway?: string;
@@ -20,12 +21,14 @@ const extra = (Constants.expoConfig?.extra ?? {}) as Extra;
 
 /** Only treat apiBase as a real backend when it's an http(s) URL — guards against
  *  null, "", "null", or any malformed manifest value falling through to fetch(). */
-function normalizeApiBase(v: unknown): string | null {
+export function normalizeApiBase(v: unknown): string | null {
   if (typeof v !== "string") return null;
   const t = v.trim();
   if (!/^https?:\/\//i.test(t)) return null;
   return t.replace(/\/+$/, "");
 }
+
+const bundledRelayBase = normalizeApiBase(extra.relayBase);
 
 export const config = {
   /** Base for Telegram-compatible Bot API. */
@@ -39,14 +42,37 @@ export const config = {
    * Base for the push relay (separate self-owned service). When set, the app stops
    * polling Telegram getUpdates directly and pulls from the relay + receives Expo push.
    */
-  relayBase: normalizeApiBase(extra.relayBase),
-} as const;
+  relayBase: bundledRelayBase,
+};
 
 /** True when a custom Agent Gateway is configured (enables phone auth + trace stream). */
 export const hasBackend = config.apiBase != null;
 
 /** True when a push relay is configured (enables background push + relay pull). */
-export const pushEnabled = config.relayBase != null;
+export function pushEnabled(): boolean {
+  return config.relayBase != null;
+}
+
+export function defaultRelayBase(): string | null {
+  return bundledRelayBase;
+}
+
+export async function loadRuntimeConfig(): Promise<void> {
+  const relayOverride = normalizeApiBase(await secureStore.get(SecureKeys.relayBase));
+  config.relayBase = relayOverride ?? bundledRelayBase;
+}
+
+export async function saveRelayBaseOverride(value: string | null): Promise<string | null> {
+  const normalized = normalizeApiBase(value);
+  if (normalized) {
+    await secureStore.set(SecureKeys.relayBase, normalized);
+    config.relayBase = normalized;
+    return normalized;
+  }
+  await secureStore.remove(SecureKeys.relayBase);
+  config.relayBase = bundledRelayBase;
+  return bundledRelayBase;
+}
 
 /** EAS projectId — required by expo-notifications getExpoPushTokenAsync. */
 export const easProjectId =

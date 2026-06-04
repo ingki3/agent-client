@@ -5,7 +5,7 @@
 import Database from "better-sqlite3";
 import { config } from "./config.js";
 import { encrypt, decrypt } from "./crypto.js";
-import type { TgUpdate } from "./types.js";
+import type { HelperItem, NormalizedMessage, TgUpdate } from "./types.js";
 
 const db = new Database(config.dbPath);
 db.pragma("journal_mode = WAL");
@@ -40,6 +40,16 @@ db.exec(`
     received_at INTEGER NOT NULL,
     PRIMARY KEY (bot_id, update_id)
   );
+  CREATE TABLE IF NOT EXISTS message_snapshots (
+    peer_id INTEGER NOT NULL,
+    message_id INTEGER NOT NULL,
+    cursor INTEGER NOT NULL,
+    payload_json TEXT NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (peer_id, message_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_message_snapshots_peer_cursor
+    ON message_snapshots (peer_id, cursor);
   -- MTProto user-account sessions (GramJS). One Telegram account per device (single-user).
   CREATE TABLE IF NOT EXISTS user_sessions (
     device_id TEXT PRIMARY KEY,
@@ -107,6 +117,51 @@ export type PeerRow = {
   last_used_at: number;
   local_seq: number;
 };
+
+function stableValue(value: unknown): unknown {
+  if (value === undefined) return null;
+  if (value === null || typeof value !== "object") return value;
+  if (Array.isArray(value)) return value.map(stableValue);
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, entry]) => [key, stableValue(entry)]),
+  );
+}
+
+function sameJson(a: unknown, b: unknown): boolean {
+  return JSON.stringify(stableValue(a)) === JSON.stringify(stableValue(b));
+}
+
+function nextSnapshotCursor(peerId: number): number {
+  const row = db
+    .prepare("SELECT COALESCE(MAX(cursor), 0) + 1 AS cursor FROM message_snapshots WHERE peer_id=?")
+    .get(peerId) as { cursor: number };
+  return row.cursor;
+}
+
+function readSnapshot(peerId: number, messageId: number): NormalizedMessage | undefined {
+  const row = db
+    .prepare("SELECT payload_json FROM message_snapshots WHERE peer_id=? AND message_id=?")
+    .get(peerId, messageId) as { payload_json: string } | undefined;
+  return row ? JSON.parse(row.payload_json) as NormalizedMessage : undefined;
+}
+
+function comparableSnapshot(message: NormalizedMessage): Omit<NormalizedMessage, "cursor" | "updatedAt"> {
+  return {
+    id: message.id,
+    peerId: message.peerId,
+    messageId: message.messageId,
+    role: message.role,
+    text: message.text,
+    status: message.status,
+    date: message.date,
+    ...(message.preview ? { preview: message.preview } : {}),
+    ...(message.media ? { media: message.media } : {}),
+    ...(message.helperItems ? { helperItems: message.helperItems } : {}),
+    ...(message.inlineKeyboard !== undefined ? { inlineKeyboard: message.inlineKeyboard } : {}),
+  };
+}
 
 export const store = {
   upsertDevice(d: { deviceId: string; secretHash: string; expoPushToken: string; platform: string }) {
@@ -199,6 +254,67 @@ export const store = {
     db.prepare(
       "INSERT OR IGNORE INTO updates (bot_id, update_id, payload_json, received_at) VALUES (?, ?, ?, ?)",
     ).run(botId, u.update_id, JSON.stringify(u), Date.now());
+  },
+
+  getMessageSnapshot(peerId: number, messageId: number): NormalizedMessage | undefined {
+    return readSnapshot(peerId, messageId);
+  },
+
+  upsertMessageSnapshot(input: Omit<NormalizedMessage, "cursor" | "updatedAt">): { message: NormalizedMessage; changed: boolean } {
+    const existing = readSnapshot(input.peerId, input.messageId);
+    const now = Date.now();
+    if (existing) {
+      const status = existing.status === "complete" && input.text === existing.text
+        ? "complete"
+        : input.status;
+      const next: NormalizedMessage = {
+        ...existing,
+        ...input,
+        status,
+        cursor: existing.cursor,
+        updatedAt: now,
+      };
+      if (sameJson(comparableSnapshot(existing), comparableSnapshot(next))) {
+        return { message: existing, changed: false };
+      }
+      const cursor = nextSnapshotCursor(input.peerId);
+      const message = { ...next, cursor, updatedAt: now };
+      db.prepare(
+        `UPDATE message_snapshots SET cursor=?, payload_json=?, updated_at=? WHERE peer_id=? AND message_id=?`,
+      ).run(cursor, JSON.stringify(message), now, input.peerId, input.messageId);
+      return { message, changed: true };
+    }
+
+    const cursor = nextSnapshotCursor(input.peerId);
+    const message: NormalizedMessage = { ...input, cursor, updatedAt: now };
+    db.prepare(
+      `INSERT INTO message_snapshots (peer_id, message_id, cursor, payload_json, updated_at)
+       VALUES (?, ?, ?, ?, ?)`,
+    ).run(input.peerId, input.messageId, cursor, JSON.stringify(message), now);
+    return { message, changed: true };
+  },
+
+  mergeSnapshotHelperItems(peerId: number, messageId: number, helperItems: HelperItem[]): { message: NormalizedMessage; changed: boolean } | undefined {
+    const existing = readSnapshot(peerId, messageId);
+    if (!existing) return undefined;
+    return store.upsertMessageSnapshot({
+      ...existing,
+      helperItems,
+      status: "complete",
+    });
+  },
+
+  listMessageSnapshots(peerId: number, sinceCursor = 0, limit = 100, opts: { legacyCursorFallback?: boolean } = {}): NormalizedMessage[] {
+    const max = db
+      .prepare("SELECT COALESCE(MAX(cursor), 0) AS cursor FROM message_snapshots WHERE peer_id=?")
+      .get(peerId) as { cursor: number };
+    const lowerBound = opts.legacyCursorFallback !== false && sinceCursor > max.cursor ? 0 : sinceCursor;
+    const rows = db
+      .prepare(
+        "SELECT payload_json FROM message_snapshots WHERE peer_id=? AND cursor>=? ORDER BY cursor ASC LIMIT ?",
+      )
+      .all(peerId, lowerBound, limit) as { payload_json: string }[];
+    return rows.map((r) => JSON.parse(r.payload_json) as NormalizedMessage);
   },
 
   // `since` is Telegram-getUpdates style: the NEXT expected update_id (the client sends

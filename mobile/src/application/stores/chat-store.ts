@@ -9,6 +9,21 @@ import type {
   ServerMessageId,
 } from '@/domain/entities/Message';
 
+function stableValue(value: unknown): unknown {
+  if (value === undefined) return null;
+  if (value === null || typeof value !== 'object') return value;
+  if (Array.isArray(value)) return value.map(stableValue);
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, entry]) => [key, stableValue(entry)]),
+  );
+}
+
+function sameMessage(a: Message, b: Message): boolean {
+  return JSON.stringify(stableValue(a)) === JSON.stringify(stableValue(b));
+}
+
 interface ChatState {
   /** buddyId -> ordered clientMessageId 배열. 화면 키는 clientMessageId (TECH §12.3). */
   byBuddy: Record<BuddyId, ClientMessageId[]>;
@@ -40,6 +55,8 @@ export const useChatStore = create<ChatState>((set) => ({
     set((s) => {
       const list = s.byBuddy[msg.buddyId] ?? [];
       if (list.includes(msg.clientMessageId)) {
+        const existing = s.messages[msg.clientMessageId];
+        if (existing && sameMessage(existing, msg)) return s;
         return { messages: { ...s.messages, [msg.clientMessageId]: msg } };
       }
       return {

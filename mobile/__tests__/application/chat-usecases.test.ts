@@ -53,6 +53,8 @@ class FakeTokenStore implements ChatBotTokenPort {
 function openDeps(opts: {
   tokenOverride?: Record<string, string>;
   fetchImpl?: typeof fetch;
+  relaySyncMessages?: ChatUseCaseDeps['relaySyncMessages'];
+  relaySyncMessageSnapshots?: ChatUseCaseDeps['relaySyncMessageSnapshots'];
 }): ChatUseCaseDeps & { db: Database } {
   const db = createBetterSqlite3Database();
   applyMigrations(db);
@@ -68,7 +70,7 @@ function openDeps(opts: {
     unreadCount: 0,
     createdAt: 1,
   });
-  return {
+  const deps: ChatUseCaseDeps & { db: Database } = {
     db,
     buddiesRepo,
     messagesRepo: new MessagesRepository(db),
@@ -86,6 +88,9 @@ function openDeps(opts: {
       return () => ++t;
     })(),
   };
+  if (opts.relaySyncMessages) deps.relaySyncMessages = opts.relaySyncMessages;
+  if (opts.relaySyncMessageSnapshots) deps.relaySyncMessageSnapshots = opts.relaySyncMessageSnapshots;
+  return deps;
 }
 
 describe('sendMessage', () => {
@@ -323,6 +328,97 @@ describe('receiveUpdates', () => {
     const outcome = await receiveUpdates(deps, { buddyId: '1001', offset: 0 });
     expect(outcome.inserted).toHaveLength(1);
     expect(outcome.newOffset).toBe(5);
+    deps.db.close();
+  });
+
+  it('merges repeated relay updates for the same message_id to the final text', async () => {
+    const deps = openDeps({
+      tokenOverride: {},
+      relaySyncMessages: async () => [
+        {
+          update_id: 6113000,
+          message: {
+            message_id: 6113,
+            date: 1780574725,
+            chat: { id: 1001, type: 'private' },
+            from: { id: 1001, is_bot: true, first_name: 'Echo' },
+            outgoing: false,
+            text: '…',
+          },
+        },
+        {
+          update_id: 6113002,
+          message: {
+            message_id: 6113,
+            date: 1780574725,
+            chat: { id: 1001, type: 'private' },
+            from: { id: 1001, is_bot: true, first_name: 'Echo' },
+            outgoing: false,
+            text: '형님, 안녕하세요! 🐧\n\n선거일 휴식을 마치고 다시 활기',
+          },
+        },
+        {
+          update_id: 6113003,
+          message: {
+            message_id: 6113,
+            date: 1780574725,
+            chat: { id: 1001, type: 'private' },
+            from: { id: 1001, is_bot: true, first_name: 'Echo' },
+            outgoing: false,
+            text: '형님, 안녕하세요! 🐧\n\n선거일 휴식을 마치고 다시 활기차게 시작하는 목요일 밤이네요!',
+          },
+        },
+      ],
+    });
+    const outcome = await receiveUpdates(deps, { buddyId: '1001', offset: 6113000 });
+    expect(outcome.newOffset).toBe(6113004);
+    expect(outcome.inserted.at(-1)?.text).toContain('활기차게 시작하는 목요일 밤');
+    const persisted = deps.messagesRepo.findByServerId('6113');
+    expect(persisted?.text).toContain('활기차게 시작하는 목요일 밤');
+    expect(deps.messagesRepo.listByBuddy('1001')).toHaveLength(1);
+    deps.db.close();
+  });
+
+  it('persists relay message snapshots by upserting the same message_id', async () => {
+    const deps = openDeps({
+      tokenOverride: {},
+      relaySyncMessageSnapshots: async () => ({
+        cursor: 8,
+        messages: [
+          {
+            id: '6113',
+            peerId: 1001,
+            messageId: 6113,
+            role: 'agent',
+            text: '초기 답변',
+            status: 'streaming',
+            date: 1780574725,
+            updatedAt: 1,
+            cursor: 6,
+          },
+          {
+            id: '6113',
+            peerId: 1001,
+            messageId: 6113,
+            role: 'agent',
+            text: '최종 답변입니다.',
+            status: 'complete',
+            date: 1780574725,
+            updatedAt: 2,
+            cursor: 7,
+            helperItems: [{ type: 'quick_replies', id: 'next', options: [{ label: '더 보기', value: '최종 답변을 더 설명해줘' }] }],
+          },
+        ],
+      }),
+    });
+    const outcome = await receiveUpdates(deps, { buddyId: '1001', offset: 0 });
+    expect(outcome.newOffset).toBe(8);
+    expect(outcome.inserted.at(-1)?.text).toBe('최종 답변입니다.');
+    expect(outcome.inserted.at(-1)?.helperItems).toHaveLength(1);
+    const persisted = deps.messagesRepo.findByServerId('6113');
+    expect(persisted?.text).toBe('최종 답변입니다.');
+    expect(persisted?.helperItems).toHaveLength(1);
+    expect(deps.messagesRepo.listByBuddy('1001')).toHaveLength(1);
     deps.db.close();
   });
 });
