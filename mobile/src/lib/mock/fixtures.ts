@@ -17,6 +17,10 @@ export type Buddy = {
   id: string;
   displayName: string;
   handle: string;
+  botId: number | null;
+  chatId: number | string | null;
+  live: boolean;
+  supportsTrace: boolean;
   accent: AccentSlot;
   role: 'work' | 'personal' | 'research';
   description: string;
@@ -44,6 +48,10 @@ export const buddies: Buddy[] = [
     id: 'buddy-work',
     displayName: 'Work Buddy',
     handle: '@simpleclaw_work_bot',
+    botId: null,
+    chatId: 'mock-work',
+    live: false,
+    supportsTrace: true,
     accent: 'accent-buddy-1',
     role: 'work',
     description: '사내 이메일·캘린더·이슈 트래커 연동',
@@ -56,6 +64,10 @@ export const buddies: Buddy[] = [
     id: 'buddy-life',
     displayName: 'Life Buddy',
     handle: '@openclaw_life_bot',
+    botId: null,
+    chatId: 'mock-life',
+    live: false,
+    supportsTrace: true,
     accent: 'accent-buddy-2',
     role: 'personal',
     description: 'Gmail · 쇼핑 · 여행 · 메모',
@@ -68,6 +80,10 @@ export const buddies: Buddy[] = [
     id: 'buddy-knowledge',
     displayName: 'Knowledge Keeper',
     handle: '@openclaw_knowledge_bot',
+    botId: null,
+    chatId: 'mock-knowledge',
+    live: false,
+    supportsTrace: false,
     accent: 'accent-buddy-6',
     role: 'research',
     description: '링크/문서 요약 · 시맨틱 검색',

@@ -27,6 +27,7 @@ import {
 import type { BuddyId } from '@/domain/entities/Buddy';
 import type { Message } from '@/domain/entities/Message';
 import { BotApiClient } from '@/infrastructure/api/bot-api-client';
+import { relayClient } from '@/infrastructure/api/relayClient';
 import { createExpoSqliteDatabase } from '@/infrastructure/storage/adapters/expo-sqlite-adapter';
 import { applyMigrations, type Database } from '@/infrastructure/storage/database';
 import { BuddiesRepository } from '@/infrastructure/storage/repositories/buddies-repo';
@@ -68,6 +69,8 @@ export function initChatRuntime(): void {
     outboxRepo: new OutboxRepository(db),
     tokenStore,
     botApi: new BotApiClient({ gateway: DEFAULT_GATEWAY }),
+    relaySendMessage: (peerId, text, clientTag) => relayClient.sendAs(peerId, text, clientTag),
+    relaySyncMessages: (peerId, sinceUpdateId, limit) => relayClient.syncMessages(peerId, sinceUpdateId, limit),
     newClientMessageId: () => uuidv4(),
     now: () => Date.now(),
   };
@@ -111,16 +114,35 @@ export function hydrateChatScreen(buddyId: BuddyId): Message[] {
   return history;
 }
 
+export function markBuddyRead(buddyId: BuddyId): void {
+  const deps = getDeps();
+  deps.buddiesRepo.markRead(buddyId);
+  useBuddiesStore.getState().markRead(buddyId);
+}
+
 export async function sendMessageFlow(
   buddyId: BuddyId,
   text: string,
+  options: { clientMessageId?: string; createdAt?: number } = {},
 ): Promise<Awaited<ReturnType<typeof sendMessageUseCase>>> {
   const deps = getDeps();
   const isOnline = useNetworkStore.getState().isOnline;
-  const outcome = await sendMessageUseCase(deps, { buddyId, text, isOnline });
-  // Always push the optimistic / queued message to the store so the UI sees it
-  // even before we know whether it sent.
-  useChatStore.getState().appendMessage(outcome.message);
+  let appended = false;
+  const input: Parameters<typeof sendMessageUseCase>[1] = {
+    buddyId,
+    text,
+    isOnline,
+    onPersisted: (message) => {
+      appended = true;
+      useChatStore.getState().appendMessage(message);
+    },
+  };
+  if (options.clientMessageId !== undefined) input.clientMessageId = options.clientMessageId;
+  if (options.createdAt !== undefined) input.createdAt = options.createdAt;
+  const outcome = await sendMessageUseCase(deps, input);
+  if (!appended) {
+    useChatStore.getState().appendMessage(outcome.message);
+  }
   if (outcome.kind === 'sent') {
     useChatStore.getState().setStatus(outcome.message.clientMessageId, 'sent');
     useChatStore.getState().setServerId(
@@ -200,6 +222,9 @@ export function startPolling(buddyId: BuddyId): () => void {
       bootedOffsets[buddyId] = outcome.newOffset;
       for (const msg of outcome.inserted) {
         useChatStore.getState().appendMessage(msg);
+      }
+      if (outcome.inserted.length > 0) {
+        markBuddyRead(buddyId);
       }
     } catch {
       // Swallow — polling is best-effort; next tick will try again.

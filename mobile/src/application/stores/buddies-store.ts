@@ -10,6 +10,7 @@ interface BuddiesState {
   getMeCache: Record<string, BotIdentity>;
   setAll: (buddies: Buddy[]) => void;
   upsert: (buddy: Buddy) => void;
+  markRead: (id: BuddyId) => void;
   remove: (id: BuddyId) => void;
   cacheGetMe: (token: string, identity: BotIdentity) => void;
   getCachedMe: (token: string) => BotIdentity | undefined;
@@ -39,6 +40,12 @@ export const useBuddiesStore = create<BuddiesState>((set, get) => ({
       const exists = buddy.id in s.buddies;
       const order = exists ? s.order : [...s.order, buddy.id];
       return { buddies: { ...s.buddies, [buddy.id]: buddy }, order };
+    }),
+  markRead: (id) =>
+    set((s) => {
+      const existing = s.buddies[id];
+      if (!existing || existing.unreadCount === 0) return s;
+      return { buddies: { ...s.buddies, [id]: { ...existing, unreadCount: 0 } } };
     }),
   remove: (id) =>
     set((s) => {

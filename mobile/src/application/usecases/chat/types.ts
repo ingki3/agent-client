@@ -12,6 +12,7 @@ import type { Database } from '@/infrastructure/storage/database';
 import type { BuddiesRepository } from '@/infrastructure/storage/repositories/buddies-repo';
 import type { MessagesRepository } from '@/infrastructure/storage/repositories/messages-repo';
 import type { OutboxRepository } from '@/infrastructure/storage/repositories/outbox-repo';
+import type { TgUpdate } from '@/infrastructure/api/telegramBotApi';
 
 /**
  * Port (TECH §2.3) — chat use-case 가 의존하는 봇 토큰 read interface.
@@ -29,6 +30,8 @@ export interface ChatUseCaseDeps {
   outboxRepo: OutboxRepository;
   tokenStore: ChatBotTokenPort;
   botApi: BotApiClient;
+  relaySendMessage?: (peerId: number, text: string, clientTag?: string) => Promise<number>;
+  relaySyncMessages?: (peerId: number, sinceUpdateId: number, limit?: number) => Promise<TgUpdate[]>;
   /** Inject `uuid()` so tests can pin clientMessageId. */
   newClientMessageId: () => string;
   /** Inject `Date.now()` so tests can pin timestamps. */

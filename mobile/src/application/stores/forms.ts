@@ -45,14 +45,14 @@ export const useFormsStore = create<FormsState>((set, get) => {
       if (!stored && seedForms[buddyId]) persist(buddyId);
     },
 
-    upsertFromPayload: (buddyId, form, sourceMessageId) => {
-      const item: AgentForm = {
-        ...form,
-        buddyId,
-        sourceMessageId,
-        status: form.status ?? "pending",
-        createdAt: form.createdAt ?? new Date().toISOString(),
-      };
+	    upsertFromPayload: (buddyId, form, sourceMessageId) => {
+	      const item: AgentForm = {
+	        ...form,
+	        buddyId,
+	        status: form.status ?? "pending",
+	        createdAt: form.createdAt ?? new Date().toISOString(),
+	      };
+	      if (sourceMessageId !== undefined) item.sourceMessageId = sourceMessageId;
       set((s) => {
         const list = s.byBuddy[buddyId] ?? [];
         const existing = list.some((f) => f.id === item.id);
@@ -70,7 +70,13 @@ export const useFormsStore = create<FormsState>((set, get) => {
       const form = get().byBuddy[buddyId]?.find((f) => f.id === formId);
       const buddy = useBuddiesStore.getState().buddies.find((b) => b.id === buddyId);
       if (!form || !buddy?.botId) return false;
-      const ok = await relayClient.submitForm(buddy.botId, { formId, taskId: form.taskId, status: "submitted", values });
+	      const payload: { formId: string; taskId?: string; status: "submitted"; values: Record<string, FormValue> } = {
+	        formId,
+	        status: "submitted",
+	        values,
+	      };
+	      if (form.taskId !== undefined) payload.taskId = form.taskId;
+	      const ok = await relayClient.submitForm(buddy.botId, payload);
       if (ok) patch(buddyId, formId, { status: "submitted", values, submittedAt: new Date().toISOString() });
       return ok;
     },
@@ -79,7 +85,13 @@ export const useFormsStore = create<FormsState>((set, get) => {
       const form = get().byBuddy[buddyId]?.find((f) => f.id === formId);
       const buddy = useBuddiesStore.getState().buddies.find((b) => b.id === buddyId);
       if (!form || !buddy?.botId) return false;
-      const ok = await relayClient.submitForm(buddy.botId, { formId, taskId: form.taskId, status: "cancelled", values: {} });
+	      const payload: { formId: string; taskId?: string; status: "cancelled"; values: Record<string, FormValue> } = {
+	        formId,
+	        status: "cancelled",
+	        values: {},
+	      };
+	      if (form.taskId !== undefined) payload.taskId = form.taskId;
+	      const ok = await relayClient.submitForm(buddy.botId, payload);
       if (ok) patch(buddyId, formId, { status: "cancelled", submittedAt: new Date().toISOString() });
       return ok;
     },

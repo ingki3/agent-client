@@ -10,11 +10,13 @@ import { easProjectId } from "@/infrastructure/config";
 
 // Foreground: show the banner + bump the badge (so an open app still surfaces it).
 Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldShowAlert: true,
-    shouldPlaySound: true,
-    shouldSetBadge: true,
-  }),
+	  handleNotification: async () => ({
+	    shouldShowAlert: true,
+	    shouldShowBanner: true,
+	    shouldShowList: true,
+	    shouldPlaySound: true,
+	    shouldSetBadge: true,
+	  }),
 });
 
 export type NotifData = { buddyId?: string; chatId?: number; updateId?: number };

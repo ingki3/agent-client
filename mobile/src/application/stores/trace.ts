@@ -6,23 +6,19 @@
  * with M1 sub 6 (BIZ-275) alongside `TraceStreamClient` (TECH §3.2).
  */
 import { create } from 'zustand';
-
-export type TraceNodeKind = 'thinking' | 'tool_call' | 'tool_result';
-
-export type TraceNode = {
-  id: string;
-  kind: TraceNodeKind;
-  label: string;
-  payload?: unknown;
-  createdAt: string;
-};
+import type { TraceNode } from '@/domain/entities';
 
 type TraceState = {
   byMessage: Record<string, TraceNode[]>;
   expanded: Record<string, boolean>;
+  toggle: (messageId: string) => void;
+  clear: () => void;
 };
 
-export const useTraceStore = create<TraceState>(() => ({
+export const useTraceStore = create<TraceState>((set) => ({
   byMessage: {},
   expanded: {},
+  toggle: (messageId) =>
+    set((s) => ({ expanded: { ...s.expanded, [messageId]: !(s.expanded[messageId] ?? false) } })),
+  clear: () => set({ byMessage: {}, expanded: {} }),
 }));

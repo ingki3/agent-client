@@ -25,6 +25,10 @@ export interface SendMessageInput {
   text: string;
   /** Network monitor 가 보고하는 현 시각 연결 상태. */
   isOnline: boolean;
+  clientMessageId?: string;
+  createdAt?: number;
+  /** Called after the local SQLite insert, before any network send is awaited. */
+  onPersisted?: (message: Message) => void;
 }
 
 export type SendMessageOutcome =
@@ -42,16 +46,17 @@ export async function sendMessage(
   }
 
   const buddy = deps.buddiesRepo.findById(input.buddyId);
-  if (!buddy) throw new BuddyNotFoundError(input.buddyId);
+  if (!buddy && !deps.relaySendMessage) throw new BuddyNotFoundError(input.buddyId);
 
-  const clientMessageId = deps.newClientMessageId();
-  const createdAt = deps.now();
+  const clientMessageId = input.clientMessageId ?? deps.newClientMessageId();
+  const createdAt = input.createdAt ?? deps.now();
   const initialStatus = input.isOnline ? 'sending' : 'queued';
+  const buddyId = buddy?.id ?? input.buddyId;
 
   const message: Message = {
     id: null,
     clientMessageId,
-    buddyId: buddy.id,
+    buddyId,
     role: 'user',
     text: trimmed,
     status: initialStatus,
@@ -65,7 +70,7 @@ export async function sendMessage(
     if (!input.isOnline) {
       deps.outboxRepo.enqueue({
         messageId: clientMessageId,
-        buddyId: buddy.id,
+        buddyId,
         text: trimmed,
         retryCount: 0,
         lastError: null,
@@ -73,6 +78,7 @@ export async function sendMessage(
       });
     }
   });
+  input.onPersisted?.(message);
 
   if (!input.isOnline) {
     return { kind: 'queued-offline', message };
@@ -81,33 +87,60 @@ export async function sendMessage(
   // 2. 토큰 → 전송. SecureStore 호출 실패는 4xx 와 동일하게 취급.
   let token: string | null = null;
   try {
-    token = await deps.tokenStore.load(buddy.id);
+    token = buddy ? await deps.tokenStore.load(buddy.id) : null;
   } catch (err) {
+    const relayOutcome = await tryRelaySend(deps, message, trimmed);
+    if (relayOutcome) return relayOutcome;
     return enqueueAndFail(deps, message, err);
   }
   if (!token) {
-    const err = new MissingBotTokenError(buddy.id);
+    const relayOutcome = await tryRelaySend(deps, message, trimmed);
+    if (relayOutcome) return relayOutcome;
+    const err = new MissingBotTokenError(buddyId);
     return enqueueAndFail(deps, message, err);
   }
 
   try {
     const result = await deps.botApi.sendMessage(token, {
-      chat_id: buddy.id,
+      chat_id: buddyId,
       text: trimmed,
     });
-    const serverMessageId = String(result.message_id);
-    deps.db.transaction(() => {
-      deps.messagesRepo.updateServerId(clientMessageId, serverMessageId);
-      deps.messagesRepo.updateStatus(clientMessageId, 'sent');
-    });
-    return {
-      kind: 'sent',
-      message: { ...message, id: serverMessageId, status: 'sent' },
-      serverMessageId,
-    };
+    return markSent(deps, message, String(result.message_id));
   } catch (err) {
     return enqueueAndFail(deps, message, err);
   }
+}
+
+async function tryRelaySend(
+  deps: ChatUseCaseDeps,
+  message: Message,
+  text: string,
+): Promise<SendMessageOutcome | null> {
+  if (!deps.relaySendMessage) return null;
+  const peerId = Number(message.buddyId);
+  if (!Number.isFinite(peerId)) return null;
+  try {
+    const messageId = await deps.relaySendMessage(peerId, text, message.clientMessageId);
+    return markSent(deps, message, String(messageId));
+  } catch (err) {
+    return enqueueAndFail(deps, message, err);
+  }
+}
+
+function markSent(
+  deps: ChatUseCaseDeps,
+  message: Message,
+  serverMessageId: ServerMessageId,
+): SendMessageOutcome {
+  deps.db.transaction(() => {
+    deps.messagesRepo.updateServerId(message.clientMessageId, serverMessageId);
+    deps.messagesRepo.updateStatus(message.clientMessageId, 'sent');
+  });
+  return {
+    kind: 'sent',
+    message: { ...message, id: serverMessageId, status: 'sent' },
+    serverMessageId,
+  };
 }
 
 function enqueueAndFail(

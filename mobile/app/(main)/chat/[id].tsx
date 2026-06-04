@@ -16,14 +16,16 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActionSheetIOS,
   Alert,
+  Keyboard,
   KeyboardAvoidingView,
   Platform,
   Pressable,
   Text,
   TextInput,
+  useWindowDimensions,
   View,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { FlashList, type FlashListRef } from '@shopify/flash-list';
 
 import { useBuddiesStore } from '@/application/stores/buddies-store';
@@ -38,6 +40,7 @@ import {
   deleteMessageFlow,
   hydrateChatScreen,
   initChatRuntime,
+  markBuddyRead,
   retryMessageFlow,
   sendMessageFlow,
   startPolling,
@@ -45,6 +48,8 @@ import {
 
 export default function ChatScreen() {
   const { color } = useTheme();
+  const insets = useSafeAreaInsets();
+  const { height: windowHeight } = useWindowDimensions();
   const router = useRouter();
   const { id } = useLocalSearchParams<{ id: string }>();
   const buddyId = id;
@@ -52,6 +57,7 @@ export default function ChatScreen() {
   const buddy = useBuddiesStore((s) => (buddyId ? s.buddies[buddyId] : undefined));
   const messageIds = useChatStore((s) => (buddyId ? s.byBuddy[buddyId] : undefined)) ?? [];
   const messagesMap = useChatStore((s) => s.messages);
+  const appendMessage = useChatStore((s) => s.appendMessage);
   const isOnline = useNetworkStore((s) => s.isOnline);
 
   const messages = useMemo(
@@ -60,37 +66,101 @@ export default function ChatScreen() {
   );
 
   const [draft, setDraft] = useState('');
+  const [keyboardInset, setKeyboardInset] = useState(0);
+  const [composerHeight, setComposerHeight] = useState(0);
   const [sending, setSending] = useState(false);
   const listRef = useRef<FlashListRef<Message>>(null);
+  const scrollRetryTimers = useRef<ReturnType<typeof setTimeout>[]>([]);
+
+  const scrollToLatest = useCallback((animated: boolean) => {
+    for (const timer of scrollRetryTimers.current) clearTimeout(timer);
+    scrollRetryTimers.current = [];
+    requestAnimationFrame(() => {
+      listRef.current?.scrollToEnd({ animated });
+      scrollRetryTimers.current = [
+        setTimeout(() => listRef.current?.scrollToEnd({ animated }), 80),
+        setTimeout(() => listRef.current?.scrollToEnd({ animated }), 240),
+      ];
+    });
+  }, []);
+
+  useEffect(
+    () => () => {
+      for (const timer of scrollRetryTimers.current) clearTimeout(timer);
+      scrollRetryTimers.current = [];
+    },
+    [],
+  );
 
   // Boot the runtime + hydrate SQLite history once per screen mount.
   useEffect(() => {
     if (!buddyId) return;
     initChatRuntime();
     hydrateChatScreen(buddyId);
+    markBuddyRead(buddyId);
+    scrollToLatest(false);
     const stop = startPolling(buddyId);
     return () => stop();
-  }, [buddyId]);
+  }, [buddyId, scrollToLatest]);
 
   // Auto-scroll to bottom when new messages arrive (S-11 자동 스크롤).
   useEffect(() => {
     if (messages.length === 0) return;
-    requestAnimationFrame(() => {
-      listRef.current?.scrollToEnd({ animated: true });
+    scrollToLatest(true);
+  }, [messages.length, scrollToLatest]);
+
+  useEffect(() => {
+    if (Platform.OS !== 'android') return undefined;
+
+    const show = Keyboard.addListener('keyboardDidShow', (event) => {
+      const keyboardTop = event.endCoordinates.screenY;
+      const overlap =
+        keyboardTop > 0
+          ? Math.max(0, windowHeight - keyboardTop - insets.bottom)
+          : Math.max(0, event.endCoordinates.height - insets.bottom);
+      setKeyboardInset(overlap);
     });
-  }, [messages.length]);
+    const hide = Keyboard.addListener('keyboardDidHide', () => {
+      setKeyboardInset(0);
+    });
+
+    return () => {
+      show.remove();
+      hide.remove();
+    };
+  }, [insets.bottom, windowHeight]);
+
+  useEffect(() => {
+    if (keyboardInset <= 0) return;
+    scrollToLatest(true);
+  }, [keyboardInset, scrollToLatest]);
 
   const handleSend = useCallback(async () => {
     const text = draft.trim();
     if (!text || !buddyId || sending) return;
+    const createdAt = Date.now();
+    const clientMessageId = `local-${createdAt}-${Math.random().toString(36).slice(2, 8)}`;
+    const optimistic: Message = {
+      id: null,
+      clientMessageId,
+      buddyId,
+      role: 'user',
+      text,
+      status: isOnline ? 'sending' : 'queued',
+      createdAt,
+      traceId: null,
+    };
     setSending(true);
     setDraft('');
+    appendMessage(optimistic);
     try {
-      await sendMessageFlow(buddyId, text);
+      await sendMessageFlow(buddyId, text, { clientMessageId, createdAt });
+    } catch {
+      useChatStore.getState().setStatus(clientMessageId, 'failed');
     } finally {
       setSending(false);
     }
-  }, [buddyId, draft, sending]);
+  }, [appendMessage, buddyId, draft, isOnline, sending]);
 
   const handleLongPress = useCallback(
     (message: Message) => {
@@ -144,6 +214,9 @@ export default function ChatScreen() {
   }
 
   const placeholder = isOnline ? '메시지 보내기' : '오프라인 — 연결되면 전송됩니다';
+  const composerBottomInset = Platform.OS === 'android' ? keyboardInset : 0;
+  const listBottomPadding =
+    space[3] + Math.max(composerHeight, touch.min + space[4]) + composerBottomInset;
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: color('surface') }} edges={['bottom']}>
@@ -157,8 +230,8 @@ export default function ChatScreen() {
       <OfflineBanner />
 
       <KeyboardAvoidingView
-        style={{ flex: 1 }}
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        style={{ flex: 1, position: 'relative' }}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         keyboardVerticalOffset={Platform.OS === 'ios' ? 80 : 0}
       >
         <FlashList
@@ -184,10 +257,14 @@ export default function ChatScreen() {
               </View>
             </View>
           )}
-          contentContainerStyle={{ paddingVertical: space[3] }}
+          contentContainerStyle={{
+            paddingTop: space[3],
+            paddingBottom: listBottomPadding,
+          }}
         />
 
         <View
+          onLayout={(event) => setComposerHeight(event.nativeEvent.layout.height)}
           style={{
             flexDirection: 'row',
             alignItems: 'flex-end',
@@ -198,6 +275,14 @@ export default function ChatScreen() {
             borderTopColor: color('border'),
             backgroundColor: color('surface'),
             gap: space[2],
+            ...(Platform.OS === 'android'
+              ? {
+                  position: 'absolute',
+                  left: 0,
+                  right: 0,
+                  bottom: composerBottomInset,
+                }
+              : null),
           }}
         >
           <View
@@ -223,7 +308,9 @@ export default function ChatScreen() {
                 maxHeight: 120,
                 minHeight: 24,
               }}
-              editable={!sending}
+              editable
+              selectTextOnFocus={false}
+              textAlignVertical="top"
               returnKeyType="send"
               blurOnSubmit={false}
             />

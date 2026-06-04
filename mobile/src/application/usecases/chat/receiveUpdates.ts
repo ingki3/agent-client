@@ -35,16 +35,27 @@ export async function receiveUpdates(
 ): Promise<ReceiveUpdatesOutcome> {
   const buddy = deps.buddiesRepo.findById(input.buddyId);
   if (!buddy) throw new BuddyNotFoundError(input.buddyId);
-  const token = await deps.tokenStore.load(buddy.id);
-  if (!token) throw new MissingBotTokenError(buddy.id);
+  let token: string | null = null;
+  try {
+    token = await deps.tokenStore.load(buddy.id);
+  } catch {
+    token = null;
+  }
 
-  const updates = await deps.botApi.getUpdates(token, {
-    offset: input.offset,
-    timeout: input.timeoutSec ?? 0,
-    allowed_updates: ['message', 'edited_message'],
-  });
+  const peerId = Number(buddy.id);
+  const useRelaySync = !token && deps.relaySyncMessages && Number.isFinite(peerId);
+  if (!token && !useRelaySync) throw new MissingBotTokenError(buddy.id);
+
+  const updates = useRelaySync
+    ? await deps.relaySyncMessages!(peerId, input.offset, 50)
+    : await deps.botApi.getUpdates(token!, {
+        offset: input.offset,
+        timeout: input.timeoutSec ?? 0,
+        allowed_updates: ['message', 'edited_message'],
+      });
 
   const inserted: Message[] = [];
+  const seenServerIds = new Set<string>();
   let newOffset = input.offset;
   let typing = false;
 
@@ -53,27 +64,47 @@ export async function receiveUpdates(
       if (u.update_id >= newOffset) newOffset = u.update_id + 1;
       const tg = u.message ?? u.edited_message;
       if (!tg) continue;
-      // 봇 메시지만 수신. user 메시지는 sendMessage 가 직접 영속화.
-      if (tg.from?.is_bot !== true) continue;
+      // Bot API 친구는 기존처럼 봇 메시지만 수신한다. Relay sync는 Telegram history라
+      // 다른 클라이언트에서 보낸 내 메시지도 복원해야 하므로 outgoing을 허용한다.
+      if (!useRelaySync && tg.from?.is_bot !== true) continue;
       // 우리 buddy 의 chat_id 와 매칭되는 것만 받는다.
       if (String(tg.chat.id) !== buddy.id) continue;
 
       const serverId = String(tg.message_id);
-      const existing = deps.messagesRepo.findByClientMessageId(serverId);
-      if (existing) continue; // dedupe
+      if (seenServerIds.has(serverId)) continue;
+      seenServerIds.add(serverId);
+      const richFields: Partial<Pick<Message, 'preview' | 'helperItems' | 'inlineKeyboard' | 'attachments' | 'text'>> = {};
+      if (tg.preview) richFields.preview = tg.preview;
+      if (tg.helper_items) richFields.helperItems = tg.helper_items;
+      if (tg.inline_keyboard !== undefined) richFields.inlineKeyboard = tg.inline_keyboard;
+      if (tg.media) {
+        const attachment = { kind: tg.media.kind, uri: tg.media.url, name: tg.media.name, mime: tg.media.mime };
+        richFields.attachments = tg.media.size == null ? [attachment] : [{ ...attachment, size: tg.media.size }];
+      }
+      if (tg.text !== undefined) richFields.text = tg.text;
+      const existing = deps.messagesRepo.findByServerId(serverId) ?? deps.messagesRepo.findByClientMessageId(serverId);
+      if (existing) {
+        const merged = deps.messagesRepo.mergeRemoteFields(serverId, richFields);
+        if (merged) inserted.push(merged);
+        continue;
+      }
 
       const message: Message = {
         id: serverId,
         clientMessageId: serverId, // 봇 메시지는 client-side ID 가 없어 server id 를 재사용
         buddyId: buddy.id,
-        role: 'agent',
+        role: tg.outgoing ? 'user' : 'agent',
         text: tg.text ?? '',
         status: 'sent',
         createdAt: (tg.date ?? 0) * 1000,
         traceId: null,
       };
-      deps.messagesRepo.insert(message);
-      inserted.push(message);
+      if (richFields.preview) message.preview = richFields.preview;
+      if (richFields.helperItems) message.helperItems = richFields.helperItems;
+      if (richFields.inlineKeyboard !== undefined) message.inlineKeyboard = richFields.inlineKeyboard;
+      if (richFields.attachments) message.attachments = richFields.attachments;
+      const insertedMessage = deps.messagesRepo.insertRemoteIfAbsent(message);
+      if (insertedMessage) inserted.push(insertedMessage);
     }
   });
 

@@ -12,6 +12,7 @@
     },
     "android": {
       "package": "dev.simplist.agentclient.mockup",
+      "usesCleartextTraffic": true,
       "adaptiveIcon": {
         "backgroundColor": "#2563EB"
       }
@@ -27,6 +28,9 @@
     ],
     "experiments": {
       "typedRoutes": true
+    },
+    "extra": {
+      "relayBase": "http://telegram-relay.2prostream.com"
     }
   }
 }

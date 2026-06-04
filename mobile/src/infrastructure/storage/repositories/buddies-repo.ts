@@ -68,6 +68,10 @@ export class BuddiesRepository {
     return row ? rowToBuddy(row) : null;
   }
 
+  markRead(id: BuddyId): void {
+    this.db.run('UPDATE buddies SET unread_count = 0 WHERE id = ?', [id]);
+  }
+
   listAll(): Buddy[] {
     return this.db
       .all<BuddyRow>('SELECT * FROM buddies ORDER BY last_message_at DESC NULLS LAST, created_at DESC')

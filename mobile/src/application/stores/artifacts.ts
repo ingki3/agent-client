@@ -31,13 +31,13 @@ export const useArtifactsStore = create<ArtifactsState>((set, get) => {
       if (!stored && seedArtifacts[buddyId]) persist(buddyId);
     },
 
-    upsertFromPayload: (buddyId, artifact, sourceMessageId) => {
-      const item: AgentArtifact = {
-        ...artifact,
-        buddyId,
-        sourceMessageId,
-        createdAt: artifact.createdAt ?? new Date().toISOString(),
-      };
+	    upsertFromPayload: (buddyId, artifact, sourceMessageId) => {
+	      const item: AgentArtifact = {
+	        ...artifact,
+	        buddyId,
+	        createdAt: artifact.createdAt ?? new Date().toISOString(),
+	      };
+	      if (sourceMessageId !== undefined) item.sourceMessageId = sourceMessageId;
       set((s) => {
         const list = s.byBuddy[buddyId] ?? [];
         const existing = list.some((a) => a.id === item.id);

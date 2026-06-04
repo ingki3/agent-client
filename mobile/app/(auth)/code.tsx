@@ -9,7 +9,6 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { useTheme } from "@/design/theme";
 import { fontSize, radius, space, touch } from "@/design/tokens";
 import { useAuthStore } from "@/application/stores/auth";
-import { useBuddiesStore } from "@/application/stores/buddies";
 
 const LENGTH = 5; // Telegram login codes are 5 digits
 const EXPIRY = 300;
@@ -17,9 +16,8 @@ const EXPIRY = 300;
 export default function CodeScreen() {
   const { color } = useTheme();
   const router = useRouter();
-  const phone = useAuthStore((s) => s.phone);
-  const submitCode = useAuthStore((s) => s.submitCode);
-  const hydrateBuddies = useBuddiesStore((s) => s.hydrate);
+  const phone = useAuthStore((s) => s.phoneE164);
+  const submitCode = useAuthStore((s) => s.verifyCode);
 
   const [code, setCode] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -39,16 +37,15 @@ export default function CodeScreen() {
     const ok = await submitCode(value);
     setBusy(false);
     if (!ok) {
-      const e = useAuthStore.getState().error;
-      setError(e === "invalid_code" ? "코드가 올바르지 않습니다." : e === "expired" ? "코드가 만료되었습니다. 번호를 수정해 다시 받아주세요." : "확인에 실패했습니다.");
+      const e = useAuthStore.getState().lastError?.code;
+      setError(e === "invalid_code" ? "코드가 올바르지 않습니다." : e === "code_expired" ? "코드가 만료되었습니다. 번호를 수정해 다시 받아주세요." : "확인에 실패했습니다.");
       setCode("");
       return;
     }
     const st = useAuthStore.getState().status;
-    if (st === "2fa") {
+    if (st === "awaiting_2fa") {
       router.replace("/twofa");
     } else {
-      await hydrateBuddies();
       router.replace("/buddies");
     }
   };

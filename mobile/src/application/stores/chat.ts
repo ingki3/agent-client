@@ -6,7 +6,22 @@ type ChatState = {
   byBuddy: Record<string, Message[]>;
   send: (buddyId: string, text: string) => void;
   receive: (buddyId: string, text: string) => void;
+  appendLocalUserMessage: (buddyId: string, text: string) => void;
+  appendLocalSystemMessage: (buddyId: string, text: string) => void;
+  catchUp: (buddyId: string) => Promise<void>;
+  reset: () => void;
 };
+
+function appendMessage(
+  byBuddy: Record<string, Message[]>,
+  buddyId: string,
+  message: Message,
+): Record<string, Message[]> {
+  return {
+    ...byBuddy,
+    [buddyId]: [...(byBuddy[buddyId] ?? []), message],
+  };
+}
 
 const cannedAgentReplies = [
   '확인했어요. 잠시만요…',
@@ -21,20 +36,14 @@ export const useChatStore = create<ChatState>((set) => ({
     const id = `u-${Date.now()}`;
     const now = new Date().toISOString();
     set((s) => ({
-      byBuddy: {
-        ...s.byBuddy,
-        [buddyId]: [
-          ...(s.byBuddy[buddyId] ?? []),
-          {
-            id,
-            buddyId,
-            author: 'user',
-            text: text.trim(),
-            createdAt: now,
-            status: 'sent',
-          },
-        ],
-      },
+      byBuddy: appendMessage(s.byBuddy, buddyId, {
+        id,
+        buddyId,
+        author: 'user',
+        text: text.trim(),
+        createdAt: now,
+        status: 'sent',
+      }),
     }));
 
     // Fake agent echo so the usability test feels responsive.
@@ -43,37 +52,48 @@ export const useChatStore = create<ChatState>((set) => ({
         const reply =
           cannedAgentReplies[Math.floor(Math.random() * cannedAgentReplies.length)] ?? '';
         return {
-          byBuddy: {
-            ...s.byBuddy,
-            [buddyId]: [
-              ...(s.byBuddy[buddyId] ?? []),
-              {
-                id: `a-${Date.now()}`,
-                buddyId,
-                author: 'agent',
-                text: reply,
-                createdAt: new Date().toISOString(),
-              },
-            ],
-          },
+            byBuddy: appendMessage(s.byBuddy, buddyId, {
+              id: `a-${Date.now()}`,
+              buddyId,
+              author: 'agent',
+              text: reply,
+              createdAt: new Date().toISOString(),
+            }),
         };
       });
     }, 700);
   },
   receive: (buddyId, text) =>
     set((s) => ({
-      byBuddy: {
-        ...s.byBuddy,
-        [buddyId]: [
-          ...(s.byBuddy[buddyId] ?? []),
-          {
-            id: `a-${Date.now()}`,
-            buddyId,
-            author: 'agent',
-            text,
-            createdAt: new Date().toISOString(),
-          },
-        ],
-      },
+      byBuddy: appendMessage(s.byBuddy, buddyId, {
+        id: `a-${Date.now()}`,
+        buddyId,
+        author: 'agent',
+        text,
+        createdAt: new Date().toISOString(),
+      }),
     })),
+  appendLocalUserMessage: (buddyId, text) =>
+    set((s) => ({
+      byBuddy: appendMessage(s.byBuddy, buddyId, {
+        id: `u-${Date.now()}`,
+        buddyId,
+        author: 'user',
+        text,
+        createdAt: new Date().toISOString(),
+        status: 'sent',
+      }),
+    })),
+  appendLocalSystemMessage: (buddyId, text) =>
+    set((s) => ({
+      byBuddy: appendMessage(s.byBuddy, buddyId, {
+        id: `sys-${Date.now()}`,
+        buddyId,
+        author: 'system',
+        text,
+        createdAt: new Date().toISOString(),
+      }),
+    })),
+  catchUp: async () => undefined,
+  reset: () => set({ byBuddy: {} }),
 }));

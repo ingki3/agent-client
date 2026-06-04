@@ -58,14 +58,15 @@ async function call<T>(
   method: string,
   params?: Record<string, unknown>,
   signal?: AbortSignal,
-): Promise<T> {
-  const url = `${config.gateway}/bot${token}/${method}`;
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: params ? JSON.stringify(params) : undefined,
-    signal,
-  });
+	): Promise<T> {
+	  const url = `${config.gateway}/bot${token}/${method}`;
+	  const init: RequestInit = {
+	    method: "POST",
+	    headers: { "Content-Type": "application/json" },
+	  };
+	  if (params !== undefined) init.body = JSON.stringify(params);
+	  if (signal !== undefined) init.signal = signal;
+	  const res = await fetch(url, init);
 
   let body: Envelope<T>;
   try {

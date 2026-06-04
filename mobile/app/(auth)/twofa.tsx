@@ -6,37 +6,33 @@ import { useState } from "react";
 import { View, Text, TextInput, Pressable, KeyboardAvoidingView, Platform } from "react-native";
 import { useRouter } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { useTheme } from "@/design/theme";
-import { fontSize, radius, space, touch } from "@/design/tokens";
+import { useTheme } from "@/ui/theme/ThemeProvider";
+import { fontSize, radius, space, touch } from "@/ui/theme/tokens";
 import { useAuthStore } from "@/application/stores/auth";
-import { useBuddiesStore } from "@/application/stores/buddies";
 
 export default function TwoFaScreen() {
   const { color } = useTheme();
   const router = useRouter();
-  const submit2fa = useAuthStore((s) => s.submit2fa);
-  const hydrateBuddies = useBuddiesStore((s) => s.hydrate);
+  const verify2fa = useAuthStore((s) => s.verify2fa);
+  const pending = useAuthStore((s) => s.pending);
+  const lastError = useAuthStore((s) => s.lastError);
 
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
 
-  const canSubmit = password.length > 0 && !busy;
+  const canSubmit = password.length > 0 && !pending;
 
   const handleSubmit = async () => {
     if (!canSubmit) return;
-    setBusy(true);
     setError(null);
-    const ok = await submit2fa(password);
-    setBusy(false);
+    const ok = await verify2fa(password);
     if (!ok) {
-      const e = useAuthStore.getState().error;
-      setError(e === "invalid_password" ? "비밀번호가 올바르지 않습니다." : "확인에 실패했습니다.");
+      const e = useAuthStore.getState().lastError;
+      setError(e?.code === "invalid_password" ? "비밀번호가 올바르지 않습니다." : e?.message || "확인에 실패했습니다.");
       setPassword("");
       return;
     }
-    await hydrateBuddies();
-    router.replace("/buddies");
+    router.replace("/(main)/buddies");
   };
 
   return (
@@ -90,9 +86,14 @@ export default function TwoFaScreen() {
             }}
           >
             <Text style={{ color: color(canSubmit ? "on-primary" : "text-disabled"), fontSize: fontSize.body, fontWeight: "700" }}>
-              {busy ? "확인 중…" : "확인"}
+              {pending ? "확인 중..." : "확인"}
             </Text>
           </Pressable>
+          {lastError?.code === "network" ? (
+            <Text style={{ color: color("error"), fontSize: fontSize["body-sm"] }}>
+              relay 연결을 확인해 주세요.
+            </Text>
+          ) : null}
         </View>
       </KeyboardAvoidingView>
     </SafeAreaView>

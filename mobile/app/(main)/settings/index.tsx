@@ -15,8 +15,8 @@ import { pushEnabled } from "@/infrastructure/config";
 export default function SettingsScreen() {
   const { color } = useTheme();
   const router = useRouter();
-  const phone = useAuthStore((s) => s.phone);
-  const tgUserId = useAuthStore((s) => s.tgUserId);
+  const phone = useAuthStore((s) => s.phoneE164);
+  const tokenExpiresAt = useAuthStore((s) => s.tokenExpiresAt);
   const permission = useNotificationsStore((s) => s.permission);
   const enableNotifications = useNotificationsStore((s) => s.enable);
   const [confirm, setConfirm] = useState(false);
@@ -45,7 +45,7 @@ export default function SettingsScreen() {
         <View style={{ backgroundColor: color("surface-elevated"), borderRadius: radius.xl, padding: space[5], gap: space[1] }}>
           <Text style={{ color: color("text-secondary"), fontSize: fontSize.caption }}>로그인 계정</Text>
           <Text style={{ color: color("text-primary"), fontSize: fontSize["title-sm"], fontWeight: "700" }}>{phone ?? "미설정"}</Text>
-          {tgUserId ? <Text style={{ color: color("text-secondary"), fontSize: fontSize.caption }}>ID {tgUserId}</Text> : null}
+          {tokenExpiresAt ? <Text style={{ color: color("text-secondary"), fontSize: fontSize.caption }}>Relay session active</Text> : null}
         </View>
       </View>
 

@@ -12,6 +12,25 @@
 
 // ---- mocks (hoisted by Jest) ----------------------------------------------
 
+jest.mock('expo-constants', () => ({
+  __esModule: true,
+  default: {
+    expoConfig: { extra: {} },
+    easConfig: null,
+  },
+}));
+
+jest.mock('@/infrastructure/api/relayClient', () => ({
+  __esModule: true,
+  relayClient: {
+    authStatus: jest.fn(),
+    authStart: jest.fn(),
+    authCode: jest.fn(),
+    auth2fa: jest.fn(),
+    authLogout: jest.fn(),
+  },
+}));
+
 jest.mock('@/infrastructure/api/auth-client', () => {
   class AuthApiErrorMock extends Error {
     code: string;
@@ -74,6 +93,33 @@ jest.mock('@/infrastructure/storage/secure-token-store', () => {
       },
       __snapshot(): Snap | null {
         return memory.current ? { ...memory.current } : null;
+      },
+    },
+  };
+});
+
+jest.mock('@/infrastructure/storage/secureStore', () => {
+  const memory = new Map<string, string>();
+  return {
+    __esModule: true,
+    SecureKeys: {
+      deviceId: 'agentclient.device.id.v1',
+      deviceSecret: 'agentclient.device.secret.v1',
+      phone: 'agentclient.phone.v1',
+      tgUserId: 'agentclient.tgUserId.v1',
+    },
+    secureStore: {
+      async get(key: string): Promise<string | null> {
+        return memory.get(key) ?? null;
+      },
+      async set(key: string, value: string): Promise<void> {
+        memory.set(key, value);
+      },
+      async remove(key: string): Promise<void> {
+        memory.delete(key);
+      },
+      async clearKnownKeys(): Promise<void> {
+        memory.clear();
       },
     },
   };

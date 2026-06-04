@@ -27,7 +27,7 @@ function liveBots(): RelayBot[] {
     .map((b) => ({ buddyId: b.id, botId: b.botId }));
 }
 
-export const useNotificationsStore = create<NotifState>((set, get) => ({
+export const useNotificationsStore = create<NotifState>((set) => ({
   permission: "undetermined",
   expoPushToken: null,
 

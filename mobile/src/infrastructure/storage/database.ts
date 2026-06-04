@@ -72,6 +72,17 @@ export const MIGRATIONS: Migration[] = [
       `);
     },
   },
+  {
+    version: 2,
+    up: (db) => {
+      db.exec(`
+        ALTER TABLE messages ADD COLUMN preview_json TEXT;
+        ALTER TABLE messages ADD COLUMN helper_items_json TEXT;
+        ALTER TABLE messages ADD COLUMN inline_keyboard_json TEXT;
+        ALTER TABLE messages ADD COLUMN attachments_json TEXT;
+      `);
+    },
+  },
 ];
 
 const VERSION_TABLE_SQL = `
