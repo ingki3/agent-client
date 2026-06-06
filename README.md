@@ -1,134 +1,122 @@
 # Agent Client
 
-> 에이전트(봇)와의 연결을 위한 전용 메신저 — **Telegram Bot API 호환** 모바일 앱 + 백그라운드 푸시 relay.
+Agent Client는 Telegram 프로토콜을 활용해 AI agent와 협업하기 위한 특수 목적 메신저입니다. 일반 메신저처럼 대화하되, agent 답변 위에 후속 액션, 링크 미리보기, 첨부, TTS, push, inline keyboard 같은 agent 협업용 UI를 얹는 것이 목표입니다.
 
-일반 메신저(Telegram 등)는 사람 간 대화 중심이라 에이전트(LLM 봇)와의 대화, 특히 마크다운
-렌더링·추론 과정(trace) 확인에 최적화돼 있지 않다. Agent Client는 친구를 추가하듯 봇을
-**버디(Buddy)** 로 등록하고, GFM 마크다운 풀-렌더링 + thinking/tool-call trace + 응답
-스트리밍을 갖춘 채팅 UX로 대화한다.
+현재 구현은 `mobile/`의 Expo/React Native 앱과 `relay/`의 Node/Fastify relay 서버로 구성됩니다. 앱은 Telegram user account로 로그인하고, relay는 MTProto 세션을 유지하면서 메시지 송수신, helper AI, media proxy, push fan-out을 담당합니다.
 
-`mobile/` 의 RN(Expo) 앱과 `relay/` 의 푸시 relay 서버, 두 부분으로 구성된다.
+## 현재 구현된 기능
 
----
+- Telegram 전화번호/코드/2FA 기반 로그인: bot token이 아니라 사용자의 Telegram 계정으로 agent bot에게 메시지를 보냅니다.
+- Agent buddy 추가: `@username`으로 bot/agent를 resolve하고 채팅방을 생성합니다.
+- 실시간 메시지 반영: relay의 message snapshot/SSE를 통해 채팅방에 열린 메시지를 갱신하고, DB 저장과 화면 스트림을 분리합니다.
+- Helper AI 후속 액션: agent 답변을 보고 quick reply, single/multi select, 입력 폼, 확인 액션 등을 생성합니다. Telegram inline keyboard가 있는 메시지는 helper AI를 건너뜁니다.
+- Link preview: URL 메시지에 제목, 설명, 대표 이미지를 카드로 표시합니다.
+- Telegram inline keyboard: callback/url/web_app/login/switch_inline/copy 계열 버튼을 앱 UI로 렌더링합니다.
+- 첨부 전송: 파일, 사진/동영상, 카메라, 위치, 음성 녹음을 composer에서 staging한 뒤 코멘트와 함께 전송합니다.
+- 첨부 수신: relay media proxy를 통해 받은 사진/파일/음성/문서를 앱에서 attachment로 표시합니다.
+- TTS: agent 답변을 대화형 script로 변환하고 음성으로 들을 수 있는 흐름을 제공합니다.
+- Push notification: Expo Push + FCM V1 credential로 Android 실기기 push가 동작하도록 구성했습니다.
+- 앱 설정: relay base URL을 앱 설정에서 관리할 수 있습니다.
 
-## 무엇이 구현되어 있나
+## 아키텍처
 
-### 📱 모바일 앱 (`mobile/`)
-Expo SDK 51 · Expo Router · Zustand · TypeScript(strict). iOS / Android / web 단일 코드베이스.
+```text
+mobile app
+  Expo SDK 55 / React Native 0.83 / Expo Router / Zustand
+  auth, buddies, chat, notifications stores
+  chat UI, helper forms, link preview, inline keyboard, attachments, TTS controls
 
-- **온보딩 (단일 사용자)** — 로그인/OTP 없이, 첫 실행 시 텔레그램 **user id(= chat_id)** 를
-  한 번 입력. 이 id가 버디의 기본 전송 주소가 되어 "봇에게 먼저 말 걸기" 없이 즉시 전송 가능.
-  SecureStore에 저장되어 자동 진입.
-- **버디 추가** — 봇 토큰 입력 → 실제 `getMe` 로 검증 + 미리보기 → 확정. 봇 id로 중복 방지,
-  토큰은 SecureStore(iOS Keychain / Android EncryptedSharedPreferences)에만 저장.
-- **친구 리스트** — 표시명·아이콘·마지막 메시지·미확인 카운트. FAB로 추가, 길게 눌러 삭제.
-- **채팅** — 텍스트 송수신, 메시지 상태(전송 중/전송됨/응답 중/완료/실패), 실패 시 재전송.
-  - **스트리밍 렌더링** — 응답이 점진적으로 채워지는 타자 효과, 중단(Stop) 제어.
-  - **GFM 마크다운 풀-렌더링** — 의존성 없는 자체 AST 파서: 헤더, bold/italic/strike,
-    인라인·펜스 코드, 정렬·중첩 리스트, 체크박스, 표, 인용, 링크, 수평선. 스트리밍 중
-    미완성 토큰(`**`, ``` ``` ```)은 안전하게 점진 적용.
-  - **Trace 가시화** — 응답 하단 "🧠 N단계 · 🛠 M개 툴 · ⏱ t초" 요약 → 펼치면
-    thinking / tool_call / tool_result 노드, 탭하면 원본 JSON(민감값 마스킹). trace 없는
-    표준 봇은 패널 미노출(fallback).
-- **설정** — user id 표시, 알림 토글, 정보/라이선스, 초기화(모든 토큰·캐시 삭제).
-- **다크 모드** 자동 대응. `.pen` 디자인 토큰과 1:1 매핑된 테마.
+relay server
+  Node / Fastify / better-sqlite3 / GramJS / Expo Server SDK
+  MTProto user sessions, peer resolve, send, media proxy, message snapshots, helper AI, push
 
-### 🔔 푸시 relay (`relay/`)
-gateway를 수정하지 않고 **백그라운드 푸시**(앱이 꺼져 있어도 알림)를 가능하게 하는,
-직접 소유하는 최소 서버. Node/TS · Fastify · better-sqlite3 · Expo Push.
-
-- 봇당 **단일 `getUpdates` 소비자**가 되어(텔레그램 단일소비자 제약 회피) 메시지를 버퍼링하고
-  **Expo Push**로 기기에 발송(APNs/FCM 인증서 직접 관리 불필요).
-- 앱은 relay 활성 시 텔레그램을 직접 폴링하지 않고 relay `/pull`로 수신. 전송(sendMessage)은
-  그대로 gateway 직결.
-- 봇 토큰 **AES-256-GCM 암호화 보관**, 로그 마스킹, 기기별 secret 인증, 구독 해제 시 토큰 삭제.
-
----
-
-## Telegram 프로토콜
-
-모든 Bot API 호출은 `{gateway}/bot{token}/{method}` (텔레그램 표준):
-`getMe`, `sendMessage`, `editMessageText`, `getUpdates`(long-poll), `sendChatAction`.
-
-- **기본 gateway** = `https://api.telegram.org` → **실제 텔레그램 봇과 즉시 대화** 가능.
-- **커스텀 게이트웨이(Hermes/agent 등)** — `app.json`의 `expo.extra.gateway`로 교체.
-  봇 토큰을 입력하는 동일 프로토콜이면 그대로 동작. `expo.extra.apiBase`로 확장(인증 API +
-  SSE trace/delta 스트림)을 더할 수 있고, `expo.extra.relayBase`로 푸시 relay를 연결한다.
-
-mock seed 버디(토큰 없음)는 백엔드 없이도 스트리밍·마크다운·trace를 시연한다.
-
----
-
-## 빠르게 실행
-
-```bash
-# 앱 (개발 모드)
-cd mobile && npm install && npm run ios     # 또는 npm run android / npm run web
-
-# 앱 (standalone Release — Metro 없이 단독 실행)
-cd mobile && npx expo run:ios --configuration Release
-
-# 푸시 relay (선택)
-cd relay && npm install
-RELAY_MASTER_KEY=$(openssl rand -hex 32) npm start
+Telegram
+  MTProto user-account path for real user sending
+  legacy Bot API path remains for compatibility/testing
 ```
 
-첫 실행 시 텔레그램 user id 입력 → 친구 리스트 → FAB(+)로 봇 토큰 추가 → 채팅.
+주요 흐름:
 
-자세한 사용/설정은 [mobile/README.md](./mobile/README.md), [relay/README.md](./relay/README.md) 참고.
+1. 앱이 relay에 `phone -> code -> 2FA` 인증을 요청합니다.
+2. relay가 Telegram MTProto 세션을 암호화해 저장합니다.
+3. 앱이 `@username`을 추가하면 relay가 peer를 resolve하고 subscription을 등록합니다.
+4. 앱이 메시지를 보내면 relay가 사용자의 Telegram 계정으로 agent bot에게 전송합니다.
+5. relay가 Telegram 메시지를 snapshot으로 정규화하고 앱에 streaming/SSE 및 pull로 전달합니다.
+6. helper AI는 agent 답변이 완료된 뒤 필요한 경우에만 후속 액션 UI를 생성합니다.
 
----
+## 디렉터리
 
-## 검증 상태
-
-| 항목 | 결과 |
-|------|------|
-| `tsc --noEmit` (app + relay) | clean |
-| 도메인 단위 (마크다운 파서·스트리밍 토큰 억제·민감값 마스킹·상태 전이) | 13/13 |
-| relay 단위 (암호화 왕복·/pull 커서 멱등·봇 reap) | 10/10 |
-| 라이브 Telegram (`getMe`·`sendMessage`·`editMessageText`·`getUpdates`) | 실제 봇으로 통과 |
-| Maestro E2E (온보딩·채팅·마크다운·trace·삭제·초기화) | 4/4 (standalone Release) |
-| Maestro E2E 라이브 (봇 토큰 추가·양방향) | `-e BOT_TOKEN=…` 로 통과 |
-| relay-pull 수신 (앱이 relay 버퍼에서 메시지 수신·렌더) | 시뮬에서 통과 |
-
-실기기 백그라운드 **푸시 도달**은 OS 제약상 EAS dev/standalone 빌드 + 실기기 필요(시뮬 불가).
-
----
-
-## 구조
-
-```
+```text
 AgentClient/
-├── README.md             # (이 문서)
-├── PRD.md                # 제품 요구사항 (MVP 범위)
-├── TECH_SPEC.md          # 기술 명세
-├── USER_FLOW.md          # 화면 단위 설계 (ID 기반)
-├── AgentClient_MVP.pen   # Pencil 와이어프레임 (light + dark)
-│
-├── mobile/               # React Native (Expo) 앱
-│   ├── app/              #   Expo Router 화면 (라우트 = 파일)
-│   │   ├── index.tsx               # 스플래시 → 분기
-│   │   ├── (auth)/userid.tsx       # 온보딩: user id 입력
-│   │   └── (main)/                 # buddies · chat/[id] · add-buddy · settings
-│   ├── src/
-│   │   ├── domain/       #     순수 TS: entities, markdown 파서 (RN import 없음)
-│   │   ├── application/  #     Zustand stores (auth/buddies/chat/trace/notifications) + usecases
-│   │   ├── infrastructure/ #   telegramBotApi · authless session · relayClient · traceStream
-│   │   │                   #   · pushClient · ReceiveSource · secureStore · kv(sqlite/web)
-│   │   └── ui/           #     markdown 렌더러, TracePanel
-│   ├── e2e/              #   Maestro 플로우
-│   └── scripts/          #   smoke-domain.ts · smoke-telegram.mjs
-│
-└── relay/                # 푸시 relay 서버 (Node/TS)
-    └── src/              #   index(API) · poller(getUpdates 루프) · push(Expo) · store(sqlite) · crypto
+├── README.md
+├── Agent_Client.md       # 현재 구현 기준 engineering handover
+├── PRD.md
+├── TECH_SPEC.md
+├── USER_FLOW.md
+├── mobile/               # Expo/React Native 앱
+└── relay/                # Telegram relay 서버
 ```
 
-### 아키텍처 (레이어드 클린 아키텍처, TECH_SPEC §2)
+상세 실행/운영 문서는 다음을 봅니다.
+
+- [mobile/README.md](./mobile/README.md)
+- [relay/README.md](./relay/README.md)
+- [Agent_Client.md](./Agent_Client.md)
+
+## 실행
+
+Relay:
+
+```sh
+cd relay
+npm install
+npm start
 ```
-app/ ─► src/ui ─► src/application ─► src/domain
-                ─► src/infrastructure ──┘  (adapter implements port)
+
+Mobile:
+
+```sh
+cd mobile
+npm install
+npm run android
 ```
-`src/domain` 은 외부 의존 없음. 수신은 `ReceiveSource` 포트로 추상화 —
-relay 미설정 시 텔레그램 직접 폴링(`TelegramPollSource`), 설정 시 relay pull(`RelayPullSource`).
-두 경로 모두 `useChatStore.ingestUpdates` 단일 dedupe/offset authority로 수렴.
+
+Android release APK:
+
+```sh
+cd mobile/android
+PATH=/usr/local/bin:$PATH \
+JAVA_TOOL_OPTIONS='--enable-native-access=ALL-UNNAMED' \
+GRADLE_OPTS='--enable-native-access=ALL-UNNAMED' \
+./gradlew :app:assembleRelease \
+  -Dorg.gradle.jvmargs='--enable-native-access=ALL-UNNAMED -Xmx4096m -XX:MaxMetaspaceSize=1024m -Dfile.encoding=UTF-8'
+
+adb install -r app/build/outputs/apk/release/app-release.apk
 ```
+
+로컬 기본 Node가 `/opt/homebrew`의 깨진 llhttp를 잡는 환경에서는 `PATH=/usr/local/bin:$PATH`를 붙여 실행합니다.
+
+## 현재 배포/설정 상태
+
+- Relay public base: `http://telegram-relay.2prostream.com`
+- Local relay: `http://127.0.0.1:8787`
+- Android package: `dev.simplist.agentclient.mockup`
+- EAS project: `@ingki3/agent-client-mockup`
+- EAS project id: `3a5f18ec-c8c8-4eed-94b1-4d1e593efca2`
+- Firebase project id: `agent-client-73b5b`
+- FCM V1 credential: EAS Android production credentials에 등록 완료
+
+`mobile/google-services.json`과 service account key는 secret입니다. `google-services.json`은 로컬에만 두고 git에는 커밋하지 않습니다. service account key는 EAS credentials에 업로드한 뒤 로컬 파일을 삭제합니다.
+
+## 검증
+
+최근 확인된 기본 검증:
+
+```sh
+cd mobile && npm run typecheck && npm run lint
+cd relay && npm run typecheck && npm test
+```
+
+Android release build와 실기기 설치도 확인했습니다. Push는 Expo Push API 직접 발송과 receipt `ok`까지 확인했고, 앱 로그에서 push token 등록 및 relay `/register` 성공을 확인했습니다.
+
+문서와 실제 구현이 다르면 [Agent_Client.md](./Agent_Client.md)를 우선 기준으로 삼습니다.
