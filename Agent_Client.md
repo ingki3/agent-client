@@ -1,395 +1,412 @@
-# Agent Client — Engineering Handover
+# Agent Client - Engineering Handover
 
-> Audience: any engineer/agent picking this up. This captures the **current architecture,
-> the major in-progress change (Telegram MTProto user-account auth), how everything wires
-> together, how to build/run/deploy it, and the known gotchas**. Read this top-to-bottom
-> once before touching code.
->
-> Companion docs: `PRD.md`, `TECH_SPEC.md`, `USER_FLOW.md` (product/spec). This file is the
-> *as-built* engineering truth and supersedes them where they differ.
->
-> Branch: `feat/biz-230-mockup-setup`. **Status: a large body of work is UNCOMMITTED** (~54
-> changed/added files) — see §11 before committing.
+이 문서는 Agent Client의 현재 구현 상태를 기준으로 한 engineering handover입니다. `PRD.md`, `TECH_SPEC.md`, `USER_FLOW.md`보다 최신 구현 사실을 우선합니다.
 
----
+현재 브랜치: `work/after-pr-24`
 
-## 1. What this is
+주의: 작업 트리는 여러 코드/문서 변경이 남아 있는 dirty 상태입니다. 커밋/머지 전에는 `git status`와 diff를 확인하고, 사용자가 만든 변경을 되돌리지 마세요.
 
-A **working Telegram-compatible chat client** (not a mockup) plus a **relay server**.
+## 1. 제품 목적
 
-- `mobile/` — Expo SDK 51 / RN 0.74 app (Expo Router, Zustand, layered architecture).
-- `relay/` — Node (ESM, tsx) / Fastify / better-sqlite3 server we own.
+Agent Client는 AI agent와 협업하기 위한 전용 메신저입니다.
 
-**The product:** chat with an AI agent that lives behind Telegram. Originally it talked to
-Telegram via a **bot token (Bot API)**. That has a fatal UX flaw: a bot token can only act
-*as the bot*, so messages the user typed went out *as the bot* ("the agent is the speaker").
+일반 Telegram 앱은 사람 간 대화에는 충분하지만, agent 답변의 구조화된 후속 액션, tool output, 링크/파일 처리, TTS, streaming, push, inline keyboard를 앱 수준에서 다루기 어렵습니다. 이 프로젝트는 Telegram 프로토콜을 통신 기반으로 사용하되, agent 협업에 필요한 UI와 relay 기능을 직접 제공합니다.
 
-**The big change (this work):** switch authentication to a **Telegram user account via
-MTProto (GramJS)**, hosted on the relay, so the human is the real sender — you talk *to* a
-bot as yourself, and its replies come back as the agent. See §4.
+현재 핵심 방향:
 
-Current concrete setup in use:
-- Relay deployed behind a **Cloudflare named tunnel**: `https://telegram-relay.2prostream.com`
-  → `http://localhost:8787` (the relay).
-- App configured with `expo.extra.relayBase = https://telegram-relay.2prostream.com`.
-- Verified end-to-end on a real device (Samsung **SM-S937N**, Android 16) and the
-  `Pixel_10_Pro` emulator: phone→code→(2FA) login, add bot by @username, send/receive,
-  markdown/code-block rendering, link previews, cross-client sync.
+- 사람 사용자는 Telegram user account로 로그인합니다.
+- Agent는 Telegram bot 또는 Telegram-compatible peer로 취급합니다.
+- 앱은 agent 답변을 보기 좋게 렌더링하고, helper AI가 후속 액션 UI를 붙입니다.
+- relay는 MTProto 세션, 메시지 정규화, push, helper AI, media proxy, TTS를 담당합니다.
 
----
+## 2. 현재 구성
 
-## 2. Repository layout
-
-```
+```text
 AgentClient/
-├─ Agent_Client.md          ← this file
-├─ PRD.md / TECH_SPEC.md / USER_FLOW.md
-├─ mobile/                  ← Expo/RN app
-│  ├─ app/                  ← Expo Router screens (file-based routing)
-│  │  ├─ index.tsx          ← splash → routes by auth status
-│  │  ├─ _layout.tsx        ← Stack + push listeners
-│  │  ├─ (auth)/            ← phone.tsx, code.tsx, twofa.tsx  (MTProto login)
-│  │  └─ (main)/            ← buddies.tsx, chat/[id].tsx, add-buddy/*, settings/*
-│  ├─ src/
-│  │  ├─ domain/            ← pure TS: entities.ts, markdown/ (parser+types)
-│  │  ├─ application/stores ← zustand: auth, buddies, chat, notifications, trace, addBuddyDraft
-│  │  ├─ infrastructure/
-│  │  │  ├─ api/            ← relayClient.ts, telegramBotApi.ts (types), traceStream.ts
-│  │  │  ├─ receive/        ← ReceiveSource.ts (RelayPullSource | NullReceiveSource)
-│  │  │  ├─ storage/        ← secureStore.ts (SecureKeys), kv.ts (KvKeys)
-│  │  │  ├─ notifications/  ← pushClient.ts (expo-notifications)
-│  │  │  └─ config.ts       ← reads expo.extra (gateway/apiBase/relayBase)
-│  │  ├─ ui/                ← markdown/Markdown.tsx (renderer), components/TracePanel
-│  │  ├─ components/        ← ChatBubble, ChatInputBar, BuddyRow, Avatar, Badge
-│  │  └─ mock/seed.ts       ← seed buddies + canned replies (offline mock buddies)
-│  ├─ android/ ios/         ← prebuilt native projects (bare workflow)
-│  ├─ app.json              ← expo config (extra.relayBase lives here)
-│  └─ e2e/                  ← Maestro flows (+ android-setup.sh, vendor/ADBKeyboard.apk)
-└─ relay/
-   └─ src/  config crypto store types log  index  poller push  mtproto  smoke store.test mtproto.smoke
+├── Agent_Client.md
+├── README.md
+├── PRD.md
+├── TECH_SPEC.md
+├── USER_FLOW.md
+├── mobile/
+│   ├── app/                       Expo Router routes
+│   ├── app/_runtime/              screen orchestration
+│   ├── src/domain/                pure TS entities, markdown, message rules
+│   ├── src/application/           Zustand stores and usecases
+│   ├── src/infrastructure/        relay API, push, attachments, storage
+│   └── src/ui/chat/               chat UI components
+└── relay/
+    ├── src/index.ts               app bootstrap
+    ├── src/http/routes/           route modules
+    ├── src/mtproto.ts             GramJS manager
+    ├── src/store.ts               SQLite schema and queries
+    ├── src/helper/                helper AI prompt/output/submit context
+    ├── src/services/              link preview and related services
+    ├── src/tts.ts                 TTS script/audio generation
+    └── src/snapshot.ts            normalized message snapshot
 ```
 
----
+Mobile stack:
 
-## 3. High-level architecture & message flow
+- Expo SDK 55
+- React Native 0.83
+- Expo Router
+- Zustand
+- TypeScript strict
+- Expo Notifications, SecureStore, SQLite, Document/Image/Location/AV/FileSystem modules
 
+Relay stack:
+
+- Node ESM
+- Fastify
+- better-sqlite3
+- GramJS (`telegram`)
+- Expo Server SDK
+- Gemini helper AI integration
+
+## 3. 현재 운영/설정 값
+
+App config:
+
+- `mobile/app.json` `expo.extra.relayBase = "http://telegram-relay.2prostream.com"`
+- `mobile/app.json` `expo.extra.eas.projectId = "3a5f18ec-c8c8-4eed-94b1-4d1e593efca2"`
+- Android package: `dev.simplist.agentclient.mockup`
+- Android cleartext is enabled because the app currently uses HTTP relay base.
+
+EAS/Firebase:
+
+- EAS account/project: `@ingki3/agent-client-mockup`
+- EAS project id: `3a5f18ec-c8c8-4eed-94b1-4d1e593efca2`
+- Firebase project id: `agent-client-73b5b`
+- Firebase project number: `608765513274`
+- FCM V1 service account email: `agentclient-fcm-v1@agent-client-73b5b.iam.gserviceaccount.com`
+- FCM V1 credential is uploaded to EAS Android production credentials.
+
+Local files:
+
+- `mobile/google-services.json` exists locally and must stay uncommitted.
+- `mobile/.secrets/*service-account*.json` is ignored. Upload service account keys to EAS, then delete local copies.
+
+Relay:
+
+- Local: `http://127.0.0.1:8787`
+- Public base used by app: `http://telegram-relay.2prostream.com`
+- tmux session used during development: `agentclient-relay`
+- Health check: `curl http://127.0.0.1:8787/health`
+
+## 4. Message flow
+
+```text
+mobile app
+  auth/buddies/chat stores
+  ChatComposer, ChatBubble, helper forms, inline keyboard, attachments
+      |
+      | HTTP/SSE
+      v
+relay
+  Fastify routes
+  GramJS TelegramClient per device
+  SQLite snapshots/devices/subscriptions
+  helper AI, TTS, link preview, media proxy, Expo Push
+      |
+      | MTProto
+      v
+Telegram servers
 ```
-┌─────────── mobile app ───────────┐        ┌──────────────── relay (Node) ─────────────┐
-│ auth store (phone/code/2fa)       │  HTTPS │ Fastify routes (/auth/*, /peers/resolve,   │
-│ buddies store (peers)             │ ─────► │  /send, /pull, /register, /media, /health) │
-│ chat store (timeline, send/recv)  │        │ mtproto.ts: per-device GramJS TelegramClient│
-│ ReceiveSource → RelayPullSource   │ ◄───── │   (logged in as the USER account)          │
-│ Markdown renderer / ChatBubble    │  /pull │ store.ts (SQLite): user_sessions, peers,   │
-└───────────────────────────────────┘        │   devices, subscriptions, updates          │
-        │ Cloudflare tunnel (TLS)             │ push.ts (Expo), poller.ts (legacy bot path)│
-        ▼                                     └───────────────┬────────────────────────────┘
-  telegram-relay.2prostream.com                               │ MTProto (GramJS)
-                                                               ▼
-                                                        Telegram servers
+
+Send text:
+
+1. 앱이 optimistic user message를 추가합니다.
+2. `relayClient.sendAs(peerId, text, replyTo?)`가 `POST /send`를 호출합니다.
+3. relay가 GramJS로 사용자의 Telegram 계정에서 peer에게 메시지를 보냅니다.
+4. Telegram message id가 돌아오면 앱이 optimistic id를 `tg-{message_id}`로 reconcile합니다.
+
+Receive:
+
+1. relay의 GramJS `NewMessage` handler가 incoming/outgoing 메시지를 받습니다.
+2. Telegram entity를 markdown으로 복원하고, media/link preview/inline keyboard를 정규화합니다.
+3. `message_snapshots`에 upsert하고 `/messages/stream` 구독자에게 `message_updated`를 publish합니다.
+4. incoming 메시지는 subscription 대상 기기에 Expo push를 보냅니다.
+5. 앱은 열린 채팅방에서 SSE로 갱신을 받고, 재진입/복구 시 `/messages/sync`와 legacy `/pull` 경로로 보강합니다.
+
+DB 저장과 화면 streaming은 분리되어 있습니다. DB cursor는 snapshot 안정성을 위한 값이고, UI는 stream event를 받아 즉시 upsert합니다.
+
+## 5. Relay route map
+
+Auth:
+
+- `POST /auth/start`
+- `POST /auth/code`
+- `POST /auth/2fa`
+- `POST /auth/logout`
+- `GET /auth/status`
+
+Peers:
+
+- `GET /peers/list`
+- `POST /peers/resolve`
+- `POST /peers/remove`
+
+Messages:
+
+- `POST /send`
+- `POST /messages/sync`
+- `GET /messages/stream`
+- `GET /pull` - legacy update pull compatibility
+- `POST /form/submit`
+- `POST /helper/submit`
+- `POST /inline-keyboard/callback`
+
+Media:
+
+- `POST /sendMedia`
+- `POST /sendMediaGroup`
+- `GET /media`
+
+Link/TTS/system:
+
+- `POST /link/preview`
+- `POST /tts/script`
+- `POST /tts/audio`
+- `GET /tts/audio/:cacheKey`
+- `POST /register`
+- `POST /unregister`
+- `GET /health`
+
+## 6. Mobile implementation notes
+
+Auth:
+
+- Phone/code/2FA flow is implemented in `mobile/app/(auth)`.
+- Relay `deviceSecret` is stored locally and used as Bearer auth for device-scoped routes.
+- Telegram session string never lives on the mobile app. It is encrypted and stored in relay DB.
+
+Buddies:
+
+- A buddy is a resolved Telegram peer.
+- Add flow resolves `@username` through relay and subscribes the current device.
+- Peer list can be restored from relay, so reinstall/login does not depend only on local app storage.
+
+Chat:
+
+- Chat runtime lives in `mobile/app/_runtime/chat.ts`.
+- Relay snapshots are converted in `mobile/app/_runtime/relaySnapshot.ts`.
+- `chat-store` upserts messages rather than blindly appending.
+- Chat room entry scrolls to recent content and marks messages read.
+- Auto-scroll should only occur when the user is near bottom or when a local send happens. Be careful when changing stream/sync code because repeated upserts can move the screen.
+
+Composer and attachments:
+
+- Composer supports text plus staged attachments.
+- File/photo/video/camera/location/voice are selected first, then sent with an optional comment.
+- Location is sent as a map URL.
+- Media groups are bucketed where Telegram allows grouping.
+- Received media uses relay `/media` URLs and renders as image/file/voice attachments.
+
+Rendering:
+
+- Markdown renderer handles headers, emphasis, code, lists, tables, blockquote, links, and code blocks.
+- Link preview card shows URL title/description/representative image.
+- Telegram inline keyboard is rendered with app-styled controls, not raw JSON.
+- Helper action submit shows only the selected user-facing value as a bubble; hidden context JSON is sent to the agent but filtered from normal display.
+
+## 7. Helper AI
+
+Helper AI runs on the relay after an agent answer is complete enough to evaluate. It uses Gemini by default and outputs the app's fixed JSON shape.
+
+Supported helper item types:
+
+- `quick_reply`
+- `single_select`
+- `multi_select`
+- `input_form`
+- `confirm_action`
+- `open_link`
+- `none` / empty result when no follow-up is useful
+
+Important rules:
+
+- Do not run helper AI when Telegram inline keyboard already exists.
+- Do not run helper AI for progress logs, tool transcripts, empty fragments, or obvious streaming partials.
+- Generate generally useful follow-ups, not prompts tied to a single known email/Youtube case.
+- Submit context should include the source message, preview/source URL if present, and recent conversation context, not only the last transcript.
+- Logs should include `helper.generate.*`, `helper.submit.*`, peer id, message id, item count, and source summary enough to debug missing chips.
+
+Display rule:
+
+- The user sees the selected value as a normal outgoing bubble.
+- The agent receives `agent_helper_response` fenced JSON with hidden context.
+- The app hides those helper JSON messages from the visible transcript.
+
+## 8. Inline keyboard
+
+Telegram Bot API/MTProto inline keyboard is supported.
+
+- Bot API path extracts inline keyboard in `relay/src/poller.ts`.
+- MTProto path extracts inline keyboard in `relay/src/telegram/inlineKeyboard.ts`.
+- App renders it through `InlineKeyboardPanel`.
+- Callback buttons call `POST /inline-keyboard/callback`.
+- URL-like buttons open the target URL.
+- Unsupported button types are rendered disabled or handled conservatively.
+
+When inline keyboard exists, helper AI should not add additional helper chips because the agent already supplied an action surface.
+
+## 9. Link preview
+
+Two sources exist:
+
+- Telegram webpage media from received messages.
+- App/relay explicit preview fetch through `POST /link/preview`.
+
+The app should show a card with title, description, host/site name, and image when available. The old black quick-reply chips for URL analysis should not be confused with link preview cards.
+
+## 10. TTS
+
+Relay TTS routes:
+
+- `POST /tts/script`: converts an agent answer into a speakable script.
+- `POST /tts/audio`: creates/caches MP3 audio and returns `audioUrl`.
+- `GET /tts/audio/:cacheKey`: serves cached audio.
+
+Design intent:
+
+- Default voice should be an energetic male Korean voice when available.
+- Script generation should be conversational and preserve the agent's existing tone where useful.
+- Modes include brief/explain/action-items style outputs.
+
+If audio generation fails, check relay logs for `tts audio failed` and verify the local TTS dependency/model path configured in `relay/src/tts.ts`.
+
+## 11. Push notification
+
+Push is Expo Push + Android FCM V1.
+
+Required app config:
+
+- `expo.extra.eas.projectId`
+- `expo-notifications` plugin
+- Android `POST_NOTIFICATIONS`
+- `google-services.json` present for native release build
+
+Required EAS/Firebase config:
+
+- Firebase Android app package must match `dev.simplist.agentclient.mockup`.
+- FCM V1 service account key must be uploaded to EAS Android credentials.
+- Local service account JSON must not be committed.
+
+Current verified state:
+
+- App generated an Expo push token.
+- App called relay `/register` with token length 41.
+- Relay DB had the device row with Android platform and Expo token.
+- Expo Push API direct send returned status `ok`.
+- Push receipt returned status `ok`.
+
+Useful checks:
+
+```sh
+adb -s <device-id> logcat -d -s ReactNativeJS | rg -i "\\[push\\]|\\[relay\\]|token|register"
+sqlite3 relay/relay.db "SELECT device_id, platform, length(expo_push_token), datetime(last_seen_at/1000,'unixepoch','localtime') FROM devices;"
 ```
 
-**Send (app → bot, as the user):** app `chat.send` appends an optimistic `role:"user"`
-message → `sendLive` → `relayClient.sendAs(peerId, text)` → `POST /send` → relay's GramJS
-client `sendMessage(peer, text)` **as the user**. The relay returns the Telegram
-`message_id`; the app rewrites the optimistic message id to `tg-{message_id}` so the echoed
-copy (from the receive handler) dedups.
+Direct push smoke:
 
-**Receive (bot → app, and cross-client):** relay's GramJS `NewMessage({})` handler (both
-directions) fires → it converts Telegram **entities → markdown** and **webpage media →
-link preview**, buffers a `TgUpdate` into the `updates` table keyed by `message_id`, and (for
-incoming only) sends an Expo push. The app's `RelayPullSource` polls `GET /pull?...&since=`
-every 3s while a chat is open (and on push), and `chat.ingestUpdates` appends messages —
-`role:"agent"` for incoming, `role:"user"` for `outgoing` (messages the user sent from any
-client → **cross-client sync**).
-
----
-
-## 4. The core change: Telegram MTProto user-account auth
-
-**Why:** Bot API (bot token) can only act as the bot. To send *as the human* to a bot, you
-need the **MTProto Client API with a user account** (phone login), not a bot token.
-
-**Where it runs:** on the **relay** (GramJS in Node), NOT on-device. Decided because GramJS
-is reliable in Node, reuses the relay's existing crypto/store/push, and supports background
-receive. The user's encrypted session lives on the relay (which they own → acceptable).
-
-**Prerequisite:** `api_id` / `api_hash` from https://my.telegram.org/apps, provided to the
-relay as env (`TELEGRAM_API_ID`, `TELEGRAM_API_HASH`).
-
-**Login flow (HTTP-driven, relay holds the session):**
-1. App `POST /auth/start {deviceId, phone}` → relay `client.sendCode()` → code sent to the
-   user's Telegram app. On first call the relay also mints the device's bearer `deviceSecret`.
-2. App `POST /auth/code {deviceId, code}` → `Api.auth.SignIn`. If 2FA → `{needs2fa:true}`.
-3. App `POST /auth/2fa {deviceId, password}` → SRP via `client.signInWithPassword`.
-4. On success the relay saves `client.session.save()` **encrypted** (`user_sessions`) and
-   keeps the live client in memory; on boot `reconnectAll()` rebuilds clients from sessions.
-
-The **mobile** auth store mirrors this with statuses `loading|onboarding|code|2fa|ready`.
-It persists only `tgUserId`/`phone` (display) + the relay `deviceSecret`; the actual Telegram
-session never leaves the relay.
-
----
-
-## 5. Relay deep-dive (`relay/src`)
-
-| File | Role |
-|---|---|
-| `index.ts` | Fastify HTTP server + all routes + boot (`reconcileLoops` + `mtproto.reconnectAll`). |
-| `mtproto.ts` | **GramJS manager**: login (start/confirmCode/confirm2fa), `sendAs`, `resolvePeer`, `NewMessage` receiver (entity→md, preview, buffer, push), `downloadWebpagePhoto`, `reconnectAll`, `logout`. |
-| `store.ts` | SQLite. Tables + ops (see below). |
-| `crypto.ts` | AES-256-GCM `encrypt/decrypt` (bot tokens AND MTProto sessions) + device-secret hashing. |
-| `types.ts` | `TgMessage`/`TgUpdate` (+ `outgoing`, `preview`), `LinkPreview`, request bodies. |
-| `config.ts` | env: `PORT` (8787), `RELAY_MASTER_KEY`, `TELEGRAM_API_ID/HASH`, `mtprotoEnabled`. |
-| `poller.ts`/`push.ts` | Legacy **bot-token** long-poll path + Expo push fan-out (still present; MTProto peers reuse `push.ts`). |
-| `store.test.ts` | `npm test` — deterministic unit checks (crypto, cursor, sessions, peers). |
-| `smoke.ts` / `mtproto.smoke.ts` | live smoke tests (need a token / phone). |
-
-**SQLite schema (store.ts):**
-- `devices(device_id PK, device_secret_hash, expo_push_token, platform, …)`
-- `user_sessions(device_id PK, enc_session, tg_user_id, phone, status[pending|active|revoked], …)` — one Telegram account per device.
-- `peers(device_id, peer_id, username, title, access_hash, local_seq, PK(device_id,peer_id))` — resolved bots/chats. `local_seq` is now **unused** (we switched cursors to message_id; see below) but kept.
-- `subscriptions(device_id, bot_id, buddy_id, PK(device_id,bot_id))` — device↔peer binding; drives `/pull` auth + push targets. `bot_id` == peer id for MTProto.
-- `updates(bot_id, update_id, payload_json, received_at, PK(bot_id,update_id))` — buffered messages; `update_id == Telegram message_id`.
-
-**HTTP endpoints (index.ts):**
-| Method/Path | Purpose |
-|---|---|
-| `POST /auth/start` | phone → request code (mints deviceSecret on first call) |
-| `POST /auth/code` | submit code → `{signedIn}` or `{needs2fa}` |
-| `POST /auth/2fa` | submit cloud password |
-| `POST /auth/logout` | `auth.LogOut` + revoke session |
-| `GET /auth/status?deviceId=` | `{status, connected, tgUserId, phone}` (drives the app's "connected" dot) |
-| `POST /peers/resolve {username}` | resolve @username → `{peerId, username, title}`; caches access_hash |
-| `POST /send {peerId, text}` | send as the user → `{messageId}` |
-| `GET /pull?deviceId&botId&since` | buffered updates with `update_id >= since` (Telegram getUpdates semantics) |
-| `POST /register` / `POST /unregister` | device + subscription registration (token-less for MTProto peers) |
-| `GET /media?deviceId&peer&msg` | proxy a message's webpage-preview photo (Telegram photos aren't public URLs). Unauthenticated by design. |
-| `GET /health` | snapshot (devices, sessions, loops) |
-
-**Critical relay invariants / fixes baked in:**
-- **Entity → markdown** (`entitiesToMarkdown` in mtproto.ts): Telegram sends formatting as
-  message *entities* (UTF-16 offsets), not literal markdown. Without converting, code blocks
-  flatten into a plain paragraph. We rebuild ```` ``` ````/`` ` ``/`**`/`_`/`~~`/`[](url)`/`> `.
-- **Ordering = `message_id`**: `update_id` is set to the Telegram `message_id` (monotonic per
-  chat). `/pull` orders by it, so order is correct even if GramJS events arrive out of order.
-- **`/pull` is `update_id >= since`** (inclusive). The app sends `since = lastSeen + 1`
-  (Telegram convention). Earlier `> since` dropped the boundary message intermittently. The
-  app dedups by message id so inclusive never duplicates.
-- **push.ts must NOT delete a device for an empty/invalid Expo token** — empty = pull-only
-  (no push granted / simulator). Only a real `DeviceNotRegistered` receipt prunes. (A prior
-  bug deleted the device on first receive → broke `/pull`.)
-- **Cross-client sync**: receiver uses `NewMessage({})` (both directions); private-chat peer
-  is always `msg.chatId`; `msg.out` → `message.outgoing = true`; push skipped for outgoing.
-
----
-
-## 6. Mobile deep-dive
-
-**Auth (`stores/auth.ts`, `app/(auth)/*`, `app/index.tsx`):** phone → code → 2fa via
-`relayClient`. `connected` + `refreshStatus()` reflect `/auth/status`. Splash routes by
-status. `SecureKeys`: `tgUserId`, `phone`, `deviceId`, `deviceSecret` (no more `botToken`/`userId`).
-
-**Peers (`stores/buddies.ts`, `app/(main)/add-buddy/*`):** a "buddy" is a resolved peer
-(bot) added by **@username** (`preview` → `relayClient.resolvePeer`; `add` → register a
-token-less subscription). `botId == peerId == chatId`. `markRead(id)` clears the unread badge.
-Live buddies show relay-session connectivity; mock seed buddies keep a static flag.
-
-**Chat (`stores/chat.ts`):**
-- `send` → optimistic `role:"user"` → `sendLive` → `relayClient.sendAs`; reconciles id to
-  `tg-{messageId}`.
-- `ingestUpdates` → appends pulled updates; `role` from `outgoing`; attaches `preview`
-  (prepends `config.relayBase` to the relay `/media` path); dedups by `tg-{message_id}`;
-  advances the per-buddy offset (`update_id + 1`).
-- Mock buddies (`live:false`) stream canned replies locally (unchanged).
-
-**Receive (`infrastructure/receive/ReceiveSource.ts`):** `RelayPullSource` (when `relayBase`
-set) polls `/pull` every 3s while a chat is open + `catchUp` on push. `NullReceiveSource`
-otherwise (live receive requires the relay). The old direct-`getUpdates` poller is removed.
-
-**Markdown (`ui/markdown/Markdown.tsx` + `domain/markdown/*`):** dependency-free GFM parser →
-RN renderer. Code blocks render as a **Telegram-style card**: header (language + 복사 button
-via `expo-clipboard`) over a horizontally-scrollable monospace body.
-
-**ChatBubble (`components/ChatBubble.tsx`):** user right / agent left; equal narrow side
-margins + wide bubbles (maxWidth 100%, row padding `space[3]`); renders `LinkPreview` card
-(cover image + site/title/description/host, tappable) when `message.preview` exists.
-
-**Chat screen (`app/(main)/chat/[id].tsx`) — scroll/read behavior:**
-- **Pagination**: windowed `messages.slice(-visible)`, `visible` starts 20, `+20` when
-  scrolled near top; `maintainVisibleContentPosition`, `initialNumToRender={visible}`.
-- **Read tracking**: `onViewableItemsChanged` records the bottom-most on-screen message id;
-  on leave it's persisted as `buddy.lastReadId`.
-- **Restore on open**: scroll to the first **unread** message at the top (Telegram-style),
-  else bottom. `scrollToIndex` needs measured rows → we render the full window
-  (`initialNumToRender`) and delay the scroll ~250ms; `onScrollToIndexFailed` retries.
-  (See §10 — this is the last area touched and is the most fragile.)
-- Header shows a **green/red connection dot** (`success`/`error`) from session connectivity.
-
----
-
-## 6b. File attachments (send)
-
-Send-side attachments for: documents (text/docx/pptx/xlsx/pdf), photo/video (library),
-camera capture, voice recording, and location.
-
-- **Deps**: `expo-document-picker`, `expo-image-picker`, `expo-av`, `expo-location`, `expo-file-system`.
-- **Pickers**: `mobile/src/infrastructure/attachments.ts` — `pickDocument`, `pickMedia`,
-  `captureCamera`, `getLocationUrl`, `start/stop/cancelRecording`, `readBase64`. Returns a
-  normalized `PickedAttachment {kind,uri,name,mime,size?,durationMs?}`.
-- **Upload**: app base64-encodes the file and POSTs `/sendMedia {deviceId,peerId,kind,fileName,
-  mime,caption?,dataBase64}` → `mtproto.sendMediaAs` → GramJS `client.sendFile` (CustomFile;
-  `forceDocument` for documents, `voiceNote` for voice, `supportsStreaming` for video; mime is
-  inferred from the filename extension). Fastify `bodyLimit` raised to 60 MB.
-- **Location** = a Google Maps URL sent as a normal message (`[📍 내 위치 (지도)](…)`) → reuses
-  `/send` + the link-preview card. No relay change for location.
-- **Grouping (one bubble)**: staged items are bucketed on send to the fewest bubbles Telegram
-  allows — photos/videos → one **album** (`/sendMediaGroup` → GramJS `sendFile` with a file
-  array), documents → one group, voices individually, and **all locations combined into one
-  text message**. Caption rides on the first group. `Message.attachments: Attachment[]` holds an
-  album; `ChatBubble` renders a 2-col image grid for multi-image, else stacked chips.
-- **Model/UI**: `Message.attachments[]` (`domain/entities.ts`); `chat.sendAttachments` (optimistic
-  render → readBase64 → `/sendMedia` → reconcile id to `tg-{id}`); `ChatInputBar` has a ＋ menu
-  (사진/동영상·카메라·파일·위치) + 🎙 record (tap start / tap stop-send / ✕ cancel);
-  `ChatBubble` `AttachmentView` renders images inline and others as a tappable file chip.
-- **Android perms** added manually to `AndroidManifest.xml` (CAMERA, RECORD_AUDIO,
-  ACCESS_FINE/COARSE_LOCATION, READ_MEDIA_IMAGES/VIDEO) — bare project, no prebuild.
-- **Not done**: rendering *received* media (files others send) needs a relay download proxy
-  (like `/media`) — follow-up. Own-sent media shows optimistically; its outgoing echo is
-  skipped by the receiver (empty text) so no dup. iOS `Info.plist` usage strings not yet added
-  (Android-only testing).
-
-## 6c. Receiving media + message UX (agent-comms)
-
-- **Received media/files**: the relay receive handler classifies incoming media
-  (`classifyMedia`: photo/video/voice/audio/document) and adds a `media` descriptor
-  (`{kind,name,mime,size,url}`) to the buffered update; bytes are fetched via the generalized
-  `/media` proxy (`mtproto.downloadMessageMedia` → `client.downloadMedia`, dynamic
-  Content-Type). The app maps `m.media` → `attachments[]` (uri = `relayBase + /media?…`), so
-  `ChatBubble` renders images inline and other files as tappable chips. This also yields
-  **cross-client media sync** (own sends dedupe by `tg-{message_id}`).
-- **Message actions** (long-press any bubble): **복사** (expo-clipboard), **답장** (sets a reply
-  quote bar above the composer; sends with Telegram `reply_to` via `sendAs(…, replyTo)` and
-  shows the quote on the bubble via `Message.replyTo`), **재전송** (failed user messages).
-- **"입력 중" indicator**: `chat.awaiting[buddyId]` — set after a live send, cleared when an
-  incoming agent message arrives (120s safety timeout). Shown above the composer.
-- **NOT done — true token streaming via message edits**: agents that stream by *editing* a
-  message aren't reflected yet. The relay only handles `NewMessage`; delivering `edited_message`
-  needs decoupling the `/pull` cursor from `message_id` (use a monotonic per-peer seq for the
-  cursor + order the app timeline by message_id/createdAt) — a deliberate redesign to avoid
-  regressing the ordering/missing-message fixes (§5). Deferred.
-
-## 7. Configuration & secrets
-
-**Relay env** (`relay/.env`, git-ignored; `.env.example` committed; loaded via
-`node --env-file-if-exists=.env`):
+```sh
+export TOKEN=$(sqlite3 relay/relay.db "SELECT expo_push_token FROM devices ORDER BY last_seen_at DESC LIMIT 1;")
+PATH=/usr/local/bin:$PATH node - <<'NODE'
+const token = process.env.TOKEN;
+fetch('https://exp.host/--/api/v2/push/send', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ to: token, title: 'AgentClient 테스트', body: 'Push credential까지 정상입니다.' })
+}).then(async res => console.log(res.status, await res.text()));
+NODE
 ```
-TELEGRAM_API_ID=…        # my.telegram.org/apps
-TELEGRAM_API_HASH=…
-RELAY_MASTER_KEY=…       # openssl rand -hex 32 ; encrypts sessions+tokens at rest
-# PORT/HOST/RELAY_DB optional
+
+## 12. Build and install
+
+Relay:
+
+```sh
+cd relay
+npm install
+npm start
 ```
-If `RELAY_MASTER_KEY` is unset, a dev key is used (loud warning) — fine for local, but
-sessions saved under the dev key won't decrypt after you set a real key (forces re-login).
 
-**App** (`mobile/app.json` → `expo.extra`): `relayBase` MUST point at the relay
-(`https://telegram-relay.2prostream.com`). With HTTPS (Cloudflare), no Android cleartext / iOS
-ATS config is needed. `gateway`/`apiBase` are legacy (unused in the MTProto path).
+Mobile typecheck/lint:
 
-**Cloudflare tunnel**: token-based (`cloudflared tunnel run --token …`), so the **local
-`~/.cloudflared/config.yaml` is ignored** — public hostnames are configured in the **Zero
-Trust dashboard** (Networks → Tunnels → Public Hostname). The route must be
-`telegram-relay.2prostream.com → HTTP localhost:8787` (HTTP, not HTTPS — the relay is plain
-HTTP; HTTPS there causes a 502).
-
----
-
-## 8. Build / run / deploy
-
-**Relay:**
+```sh
+cd mobile
+npm run typecheck
+npm run lint
 ```
-cd relay && npm install
-npm start          # node --env-file-if-exists=.env --import tsx src/index.ts
-# expect log: "mtproto enabled (user-account path active)" + "relay listening on …:8787"
+
+Android release build:
+
+```sh
+cd mobile/android
+PATH=/usr/local/bin:$PATH \
+JAVA_TOOL_OPTIONS='--enable-native-access=ALL-UNNAMED' \
+GRADLE_OPTS='--enable-native-access=ALL-UNNAMED' \
+./gradlew :app:assembleRelease \
+  -Dorg.gradle.jvmargs='--enable-native-access=ALL-UNNAMED -Xmx4096m -XX:MaxMetaspaceSize=1024m -Dfile.encoding=UTF-8'
 ```
-For permanent use run it under a process manager (the mac-mini host). cloudflared must be up
-and routing to localhost:8787 (see §7).
 
-**Mobile (Android release APK — standalone, no Metro):**
+Install:
+
+```sh
+adb -s <device-id> install -r app/build/outputs/apk/release/app-release.apk
 ```
-export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"   # JBR 21
-cd mobile/android && ./gradlew :app:assembleRelease
-adb -s <device> install -r app/build/outputs/apk/release/app-release.apk
+
+Known local build issue:
+
+- Default `/opt/homebrew/bin/node` can fail with missing `llhttp`. Use `PATH=/usr/local/bin:$PATH`.
+- If native config/autolinking is stale, clear:
+
+```sh
+cd mobile/android
+rm -rf app/.cxx app/build/generated/autolinking
 ```
-- Release is signed with the debug key → installs on devices/emulators directly.
-- First build ~19 min (NDK); incremental ~12–20s.
-- `applicationId` = `dev.simplist.agentclient.mockup`.
-- `~/Desktop/AgentClient.apk` is kept as the latest copy for sideloading to the phone.
 
----
+## 13. Test expectations
 
-## 9. Testing
+For code changes, do not finish without running relevant tests and reporting results.
 
-- **Relay unit**: `cd relay && npm test` (currently 20/20) — crypto round-trip, session/peer
-  ops, `nextPeerSeq`, cursor inclusivity. No network.
-- **Relay live smoke**: `npm run smoke:mtproto -- <+phone> <botUsername>` (needs api creds +
-  interactive code/2FA on stdin) — proves login+send+receive+buffer end-to-end without a device.
-- **Typecheck**: `npx tsc --noEmit` in both `relay/` and `mobile/` (both clean as of handover).
-- **e2e (Maestro, `mobile/e2e/`)**: ⚠️ **currently broken by the auth change** — the login
-  subflow uses the removed user-id onboarding, and MTProto login can't be automated (real
-  Telegram code). Needs redesign. The flow files + `android-setup.sh` (ADBKeyboard for Unicode
-  input + no-keyboard-occlusion) remain from the iOS-verified era.
+Recommended baseline:
 
----
+```sh
+cd mobile && npm run typecheck && npm run lint
+cd relay && npm run typecheck && npm test
+```
 
-## 10. Known issues, gotchas, TODO
+When user-visible mobile behavior changes:
 
-**Gotchas that will bite you (all learned the hard way):**
-- **Gradle build cache hides `app.json` `extra` changes.** `app.json` isn't a tracked input
-  of `createBundleReleaseJsAndAssets`, so changing `relayBase` etc. is restored from cache and
-  NOT re-embedded. Fix: `./gradlew clean :app:assembleRelease`. Verify with
-  `unzip -p app-release.apk assets/app.config | grep relayBase` (it lives in the expo-constants
-  manifest, NOT in `index.android.bundle`).
-- **`adb install` hangs if the phone screen is locked/off** (Samsung). Keep the screen awake
-  during install. USB needs a data mode (MTP) and the RSA "Allow USB debugging" prompt accepted.
-- **`tsc` cwd**: running two `npx tsc` in one shell line keeps the first cwd — run mobile and
-  relay typechecks in separate commands.
-- **Relay process lifetime**: launch `npm start` as its own long-lived process; nesting it in
-  a wrapper that exits kills it.
+1. Build Android release APK.
+2. Install on the connected phone.
+3. Verify the changed flow on device.
+4. Check ReactNativeJS logs for push/relay/chat errors when relevant.
 
-**Open / fragile:**
-- **Chat scroll restore (#2)** is the last thing touched and NOT yet re-verified after the
-  latest fix (`initialNumToRender={visible}` + 250ms delayed `scrollToIndex`, first-unread at
-  top). Root cause was `scrollToIndex` firing before rows were measured (`averageItemLength=0`
-  → landed at top). If still flaky, the robust path is an **inverted FlatList** (deterministic
-  bottom start + reliable scrollToIndex for recent items) — was considered but not done to
-  avoid the inverted `viewPosition` ambiguity.
-- **Link-preview image** depends on the relay `/media` proxy downloading the Telegram photo
-  on demand (no caching yet) — could be slow/repeated; add caching if needed.
-- **e2e suite** needs redesign for MTProto auth (can't automate the login code).
-- **History backfill**: only *new* messages are synced; past Telegram history isn't fetched
-  when adding a peer. Consider `getMessages` backfill.
-- **Single account per device** is assumed (`user_sessions` PK = device_id).
-- **Telegram ToS / FLOOD_WAIT**: automating a user account from a server has ban risk; the
-  relay surfaces `FLOOD_WAIT` as `retryAfter`. Keep volume human-paced.
+When relay protocol changes:
 
----
+1. Run relay typecheck and tests.
+2. Restart relay.
+3. Check `/health`.
+4. Confirm app can login/sync/send/receive.
 
-## 11. Uncommitted state & how to continue
+## 14. Known gotchas
 
-Everything described here is **uncommitted** on `feat/biz-230-mockup-setup` (~54 files:
-relay MTProto layer, mobile auth/peer/chat rework, markdown/link-preview/scroll UI, e2e
-README/scripts, `relay/.env.example`, vendored `ADBKeyboard.apk`). Before committing:
-- Don't commit `relay/.env` (git-ignored) or real `api_hash`.
-- Re-verify the scroll-restore fix on device (§10) — or switch to inverted FlatList.
-- Decide on the e2e redesign.
+- `app.json` changes can be hidden by Gradle/native cache. Rebuild cleanly or clear `app/.cxx` and generated autolinking.
+- If relay base changes, make sure both app config and in-app relay setting are aligned.
+- Push token creation requires a real EAS project id. Fake IDs produce `EXPERIENCE_NOT_FOUND`.
+- Android push delivery requires FCM V1 credentials in EAS. Missing credentials produce Expo push `InvalidCredentials`.
+- Empty Expo push token means pull-only; relay must not delete the device for that.
+- Telegram user-account automation can hit `FLOOD_WAIT`; surface retry information and keep usage human-paced.
+- Helper JSON context is intentionally hidden from the transcript. If JSON appears to the user, check hidden-message filtering and helper submit formatting.
+- Streaming screen jumps usually mean a sync/stream upsert is triggering unconditional scroll-to-end.
 
-**To resume the live system:** ensure (1) `relay/.env` has the 3 vars, (2) `npm start` in
-`relay/` is running, (3) cloudflared routes `telegram-relay.2prostream.com → http://localhost:8787`,
-(4) the installed app's `app.json` `relayBase` matches. Confirm with
-`curl https://telegram-relay.2prostream.com/health` → `{"ok":true,…,"sessions":[{… "status":"active"}]}`.
+## 15. What is intentionally not complete
 
-**Background context worth knowing:** the original app was a Telegram **bot-token** client
-(see git history before this work and `TECH_SPEC.md`). The agent's persistent project memory
-(`~/.claude/projects/-Users-simplist-Dev-AgentClient/memory/`) has condensed notes —
-especially `project_mtproto_auth.md` (this change) and `feedback_rn_maestro_testing.md`
-(RN/Android build & test gotchas).
+- Fully automated e2e for Telegram phone/code login is not practical without a controllable test account/code channel.
+- iOS native permission strings for all attachment paths were not recently verified.
+- Received media proxy has basic caching headers, but no persistent media cache.
+- Long Telegram history backfill is limited to the current sync path and should be expanded carefully if needed.
+- Legacy Bot API paths remain for compatibility, but the main product path is MTProto user-account relay.
