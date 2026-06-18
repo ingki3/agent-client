@@ -13,11 +13,13 @@ export type PushItem = { expoPushToken: string; botTitle: string; m: TgMessage; 
 
 export async function sendPushes(items: PushItem[]): Promise<void> {
   const messages: ExpoPushMessage[] = [];
+  let skippedInvalidToken = 0;
   for (const it of items) {
     if (!Expo.isExpoPushToken(it.expoPushToken)) {
       // Empty token = pull-only device (push not granted / simulator); a malformed token
       // can still pull. Do NOT delete the device here — only a real DeviceNotRegistered
       // receipt (below) prunes it. (Deleting on empty token broke relay-pull receive.)
+      skippedInvalidToken += 1;
       continue;
     }
     const text = it.m.text ?? "";
@@ -30,7 +32,11 @@ export async function sendPushes(items: PushItem[]): Promise<void> {
       data: { buddyId: it.buddyId, updateId: it.updateId, chatId: it.m.chat.id },
     });
   }
-  if (messages.length === 0) return;
+  if (messages.length === 0) {
+    log.info(`push skipped total=${items.length} invalid_or_empty_token=${skippedInvalidToken}`);
+    return;
+  }
+  log.info(`push sending total=${items.length} messages=${messages.length} invalid_or_empty_token=${skippedInvalidToken}`);
 
   const chunks = expo.chunkPushNotifications(messages);
   const tickets: ExpoPushTicket[] = [];
@@ -54,4 +60,6 @@ export async function sendPushes(items: PushItem[]): Promise<void> {
       }
     }
   });
+  const errors = tickets.filter((t) => t.status === "error").length;
+  log.info(`push tickets sent=${tickets.length} errors=${errors}`);
 }

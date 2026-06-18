@@ -20,6 +20,8 @@ const apiId = Number(process.env.TELEGRAM_API_ID ?? 0);
 const apiHash = process.env.TELEGRAM_API_HASH ?? "";
 const helperEnabled = process.env.HELPER_ENABLED !== "false";
 const ttsEnabled = process.env.TTS_ENABLED !== "false";
+const llmBaseUrl = (process.env.LLM_BASE_URL ?? process.env.OPENAI_BASE_URL ?? "https://generativelanguage.googleapis.com/v1beta/openai").replace(/\/+$/, "");
+const llmConcurrency = Math.max(1, Number(process.env.LLM_CONCURRENCY ?? 4));
 
 export const config = {
   port: Number(process.env.PORT ?? 8787),
@@ -38,8 +40,14 @@ export const config = {
   /** Whether the user-account (MTProto) path is configured. */
   mtprotoEnabled: !!(apiId && apiHash),
   helperEnabled,
-  geminiApiKey: process.env.GEMINI_API_KEY ?? "",
-  helperModel: process.env.HELPER_MODEL ?? "gemini-2.5-flash",
+  /** OpenAI-compatible model endpoint used by helper AI and TTS script rewriting. */
+  llmBaseUrl,
+  llmApiKey: process.env.LLM_API_KEY ?? process.env.GEMINI_API_KEY ?? process.env.OPENAI_API_KEY ?? "not-needed",
+  llmModel: process.env.LLM_MODEL ?? process.env.HELPER_MODEL ?? "gemini-3.5-flash",
+  llmMaxTokens: Number(process.env.LLM_MAX_TOKENS ?? 32000),
+  llmHelperMaxTokens: Number(process.env.LLM_HELPER_MAX_TOKENS ?? 1024),
+  llmTtsMaxTokens: Number(process.env.LLM_TTS_MAX_TOKENS ?? 2048),
+  llmConcurrency,
   ttsEnabled,
   ttsProvider: process.env.TTS_PROVIDER ?? "edge-tts",
   ttsVoice: process.env.TTS_VOICE ?? "ko-KR-InJoonNeural",

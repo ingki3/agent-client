@@ -125,10 +125,12 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   bootstrap: async () => {
     set({ status: 'initializing', lastError: null });
     if (relayAuthEnabled()) {
+      console.log('[auth] relay bootstrap start');
       const relayStatus = await relayClient.authStatus();
       if (relayStatus?.status === 'active' || relayStatus?.connected) {
         const phone = await secureStore.get(SecureKeys.phone);
         const expiresAt = await saveRelaySession(phone, relayStatus.tgUserId);
+        console.log('[auth] relay bootstrap active');
         set({
           status: 'auth',
           phoneE164: phone,
@@ -140,6 +142,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         });
         return;
       }
+      console.log('[auth] relay bootstrap guest');
       set({ status: 'guest', tokenExpiresAt: null, phoneE164: null, pending: false });
       return;
     }

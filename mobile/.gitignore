@@ -7,6 +7,9 @@ web-build/
 ios/
 android/
 .env*
+google-services.json
+.secrets/
+*-service-account.json
 
 
 # @generated expo-cli

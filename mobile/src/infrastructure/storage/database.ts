@@ -83,6 +83,18 @@ export const MIGRATIONS: Migration[] = [
       `);
     },
   },
+  {
+    version: 3,
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS message_sync_state (
+          peer_id TEXT PRIMARY KEY,
+          cursor INTEGER NOT NULL DEFAULT 0,
+          updated_at INTEGER NOT NULL
+        );
+      `);
+    },
+  },
 ];
 
 const VERSION_TABLE_SQL = `

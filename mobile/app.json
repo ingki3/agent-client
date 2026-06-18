@@ -13,6 +13,9 @@
     "android": {
       "package": "dev.simplist.agentclient.mockup",
       "usesCleartextTraffic": true,
+      "permissions": [
+        "POST_NOTIFICATIONS"
+      ],
       "adaptiveIcon": {
         "backgroundColor": "#2563EB"
       }
@@ -24,13 +27,17 @@
     "plugins": [
       "expo-router",
       "expo-secure-store",
-      "expo-image"
+      "expo-image",
+      "expo-notifications"
     ],
     "experiments": {
       "typedRoutes": true
     },
     "extra": {
-      "relayBase": "http://telegram-relay.2prostream.com"
+      "relayBase": "http://telegram-relay.2prostream.com",
+      "eas": {
+        "projectId": "3a5f18ec-c8c8-4eed-94b1-4d1e593efca2"
+      }
     }
   }
 }

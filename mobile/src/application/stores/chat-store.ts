@@ -8,6 +8,8 @@ import type {
   MessageStatus,
   ServerMessageId,
 } from '@/domain/entities/Message';
+import { isLikelyDuplicateMessage } from '@/domain/messages/duplicateMessages';
+import { isHiddenHelperSubmitMessage } from '@/domain/messages/hiddenMessages';
 
 function stableValue(value: unknown): unknown {
   if (value === undefined) return null;
@@ -46,6 +48,7 @@ export const useChatStore = create<ChatState>((set) => ({
       const messages = { ...s.messages };
       const ids: ClientMessageId[] = [];
       for (const m of list) {
+        if (isHiddenHelperSubmitMessage(m)) continue;
         messages[m.clientMessageId] = m;
         ids.push(m.clientMessageId);
       }
@@ -53,7 +56,13 @@ export const useChatStore = create<ChatState>((set) => ({
     }),
   appendMessage: (msg) =>
     set((s) => {
+      if (isHiddenHelperSubmitMessage(msg)) return s;
       const list = s.byBuddy[msg.buddyId] ?? [];
+      const duplicateClientId = list.find((clientMessageId) => {
+        const existing = s.messages[clientMessageId];
+        return existing ? isLikelyDuplicateMessage(existing, msg) : false;
+      });
+      if (duplicateClientId) return s;
       if (list.includes(msg.clientMessageId)) {
         const existing = s.messages[msg.clientMessageId];
         if (existing && sameMessage(existing, msg)) return s;

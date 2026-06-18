@@ -6,7 +6,7 @@
 import * as DocumentPicker from "expo-document-picker";
 import * as ImagePicker from "expo-image-picker";
 import * as Location from "expo-location";
-import * as FileSystem from "expo-file-system";
+import * as FileSystem from "expo-file-system/legacy";
 import { Audio } from "expo-av";
 import type { AttachmentKind } from "@/domain/entities";
 
@@ -24,20 +24,37 @@ function nameFromUri(uri: string, fallback: string): string {
   return last && last.includes(".") ? decodeURIComponent(last) : fallback;
 }
 
+function safeFileName(name: string): string {
+  const cleaned = name.trim().replace(/[\\/:*?"<>|\u0000-\u001F]/g, "_");
+  return cleaned || "file";
+}
+
+async function cachePickedFile(uri: string, name: string): Promise<string> {
+  if (uri.startsWith("file://")) return uri;
+  const root = FileSystem.cacheDirectory;
+  if (!root) return uri;
+  const dir = `${root}agentclient-attachments/`;
+  await FileSystem.makeDirectoryAsync(dir, { intermediates: true }).catch(() => undefined);
+  const target = `${dir}${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${safeFileName(name)}`;
+  await FileSystem.copyAsync({ from: uri, to: target });
+  return target;
+}
+
 /** Any files: text, pdf, docx, pptx, xlsx, … (multi-select). */
 export async function pickDocument(): Promise<PickedAttachment[]> {
   const res = await DocumentPicker.getDocumentAsync({ type: "*/*", copyToCacheDirectory: true, multiple: true });
   if (res.canceled || !res.assets?.length) return [];
-  return res.assets.map((a) => {
+  return Promise.all(res.assets.map(async (a) => {
+    const name = a.name ?? nameFromUri(a.uri, "file");
     const item: PickedAttachment = {
       kind: "document",
-      uri: a.uri,
-      name: a.name ?? nameFromUri(a.uri, "file"),
+      uri: await cachePickedFile(a.uri, name),
+      name,
       mime: a.mimeType ?? "application/octet-stream",
     };
     if (a.size !== undefined) item.size = a.size;
     return item;
-  });
+  }));
 }
 
 /** Photos/videos from the library (multi-select). */
@@ -93,8 +110,9 @@ export async function getLocationUrl(): Promise<string | null> {
 }
 
 /** Read a local file as base64 for upload. */
-export function readBase64(uri: string): Promise<string> {
-  return FileSystem.readAsStringAsync(uri, { encoding: "base64" });
+export async function readBase64(uri: string, fallbackName = "file"): Promise<string> {
+  const readableUri = uri.startsWith("file://") ? uri : await cachePickedFile(uri, fallbackName);
+  return FileSystem.readAsStringAsync(readableUri, { encoding: FileSystem.EncodingType.Base64 });
 }
 
 // ─── Voice recording ─────────────────────────────────────────────────────────

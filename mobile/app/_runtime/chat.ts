@@ -20,6 +20,8 @@ import {
   deleteMessage as deleteMessageUseCase,
   flushOutbox as flushOutboxUseCase,
   listMessages as listMessagesUseCase,
+  persistLocalDisplayMessage,
+  persistRemoteMessage,
   receiveUpdates as receiveUpdatesUseCase,
   retryMessage as retryMessageUseCase,
   sendMessage as sendMessageUseCase,
@@ -27,11 +29,12 @@ import {
 import type { BuddyId } from '@/domain/entities/Buddy';
 import type { Message } from '@/domain/entities/Message';
 import { BotApiClient } from '@/infrastructure/api/bot-api-client';
-import { relayClient, type RelayMessageSnapshot, type RelayStreamHandle } from '@/infrastructure/api/relayClient';
+import { relayClient, type RelayStreamHandle } from '@/infrastructure/api/relayClient';
 import { readBase64, type PickedAttachment } from '@/infrastructure/attachments';
 import { createExpoSqliteDatabase } from '@/infrastructure/storage/adapters/expo-sqlite-adapter';
 import { applyMigrations, type Database } from '@/infrastructure/storage/database';
 import { BuddiesRepository } from '@/infrastructure/storage/repositories/buddies-repo';
+import { MessageSyncStateRepository } from '@/infrastructure/storage/repositories/message-sync-state-repo';
 import { MessagesRepository } from '@/infrastructure/storage/repositories/messages-repo';
 import { OutboxRepository } from '@/infrastructure/storage/repositories/outbox-repo';
 
@@ -68,6 +71,7 @@ export function initChatRuntime(): void {
   depsRef = {
     db,
     buddiesRepo: new BuddiesRepository(db),
+    messageSyncStateRepo: new MessageSyncStateRepository(db),
     messagesRepo: new MessagesRepository(db),
     outboxRepo: new OutboxRepository(db),
     tokenStore,
@@ -199,7 +203,7 @@ export async function sendAttachmentFlow(
   }
 
   try {
-    const dataBase64 = await readBase64(attachment.uri);
+    const dataBase64 = await readBase64(attachment.uri, attachment.name);
     const payload = {
       kind: attachment.kind,
       fileName: attachment.name,
@@ -214,7 +218,90 @@ export async function sendAttachmentFlow(
     useChatStore.getState().setServerId(clientMessageId, String(messageId));
     useChatStore.getState().setStatus(clientMessageId, 'sent');
     return { ...message, id: String(messageId), status: 'sent' };
-  } catch {
+  } catch (err) {
+    console.warn('[chat] sendAttachmentFlow failed', {
+      buddyId,
+      name: attachment.name,
+      mime: attachment.mime,
+      uriScheme: attachment.uri.split(':')[0],
+      error: err instanceof Error ? err.message : String(err),
+    });
+    deps.db.transaction(() => {
+      deps.messagesRepo.updateStatus(clientMessageId, 'failed');
+    });
+    useChatStore.getState().setStatus(clientMessageId, 'failed');
+    return { ...message, status: 'failed' };
+  }
+}
+
+export async function sendAttachmentGroupFlow(
+  buddyId: BuddyId,
+  attachments: PickedAttachment[],
+  caption = '',
+): Promise<Message> {
+  if (attachments.length === 0) {
+    throw new Error('sendAttachmentGroupFlow: empty attachments are not allowed');
+  }
+  if (attachments.length === 1) {
+    return sendAttachmentFlow(buddyId, attachments[0]!, caption);
+  }
+
+  const deps = getDeps();
+  const createdAt = deps.now();
+  const clientMessageId = `local-media-${createdAt}-${Math.random().toString(36).slice(2, 8)}`;
+  const text = caption.trim();
+  const message: Message = {
+    id: null,
+    clientMessageId,
+    buddyId,
+    role: 'user',
+    text,
+    status: useNetworkStore.getState().isOnline ? 'sending' : 'failed',
+    createdAt,
+    traceId: null,
+    attachments: attachments.map((attachment) => ({
+      kind: attachment.kind,
+      uri: attachment.uri,
+      name: attachment.name,
+      mime: attachment.mime,
+      ...(attachment.size !== undefined ? { size: attachment.size } : {}),
+    })),
+  };
+
+  deps.db.transaction(() => {
+    deps.messagesRepo.insert(message);
+  });
+  useChatStore.getState().appendMessage(message);
+
+  const peerId = Number(buddyId);
+  if (!useNetworkStore.getState().isOnline || !Number.isFinite(peerId)) {
+    useChatStore.getState().setStatus(clientMessageId, 'failed');
+    return { ...message, status: 'failed' };
+  }
+
+  try {
+    const files = await Promise.all(
+      attachments.map(async (attachment) => ({
+        kind: attachment.kind,
+        fileName: attachment.name,
+        mime: attachment.mime,
+        dataBase64: await readBase64(attachment.uri, attachment.name),
+      })),
+    );
+    const messageId = await relayClient.sendMediaGroup(peerId, files, text || undefined);
+    deps.db.transaction(() => {
+      deps.messagesRepo.updateServerId(clientMessageId, String(messageId));
+      deps.messagesRepo.updateStatus(clientMessageId, 'sent');
+    });
+    useChatStore.getState().setServerId(clientMessageId, String(messageId));
+    useChatStore.getState().setStatus(clientMessageId, 'sent');
+    return { ...message, id: String(messageId), status: 'sent' };
+  } catch (err) {
+    console.warn('[chat] sendAttachmentGroupFlow failed', {
+      buddyId,
+      count: attachments.length,
+      error: err instanceof Error ? err.message : String(err),
+    });
     deps.db.transaction(() => {
       deps.messagesRepo.updateStatus(clientMessageId, 'failed');
     });
@@ -284,7 +371,7 @@ export function startPolling(buddyId: BuddyId): () => void {
       return;
     }
     try {
-      const offset = bootedOffsets[buddyId] ?? 0;
+      const offset = bootedOffsets[buddyId] ?? deps.messageSyncStateRepo.getCursor(buddyId);
       const outcome = await receiveUpdatesUseCase(deps, { buddyId, offset });
       bootedOffsets[buddyId] = outcome.newOffset;
       for (const msg of outcome.inserted) {
@@ -309,36 +396,19 @@ export function startPolling(buddyId: BuddyId): () => void {
   };
 }
 
-function snapshotToMessage(snapshot: RelayMessageSnapshot, buddyId: BuddyId): Message {
-  const message: Message = {
-    id: String(snapshot.messageId),
-    clientMessageId: String(snapshot.messageId),
-    buddyId,
-    role: snapshot.role,
-    text: snapshot.text,
-    status: 'sent',
-    createdAt: snapshot.date * 1000,
-    traceId: null,
-  };
-  if (snapshot.preview) message.preview = snapshot.preview;
-  if (snapshot.helperItems) message.helperItems = snapshot.helperItems;
-  if (snapshot.inlineKeyboard !== undefined) message.inlineKeyboard = snapshot.inlineKeyboard;
-  if (snapshot.media) {
-    const attachment = { kind: snapshot.media.kind, uri: snapshot.media.url, name: snapshot.media.name, mime: snapshot.media.mime };
-    message.attachments = snapshot.media.size == null ? [attachment] : [{ ...attachment, size: snapshot.media.size }];
-  }
-  return message;
-}
-
 function startRelayStream(buddyId: BuddyId, sinceCursor: number): void {
   if (activeStreams[buddyId] || pendingStreams.has(buddyId)) return;
+  const deps = getDeps();
   const peerId = Number(buddyId);
   if (!Number.isFinite(peerId)) return;
   pendingStreams.add(buddyId);
   void relayClient.openMessageStream(peerId, sinceCursor, (event) => {
     if (event.type !== 'message_updated' && event.type !== 'helper_updated') return;
     if (event.message.role !== 'agent') return;
-    useChatStore.getState().appendMessage(snapshotToMessage(event.message, buddyId));
+    const persisted = persistRemoteMessage(deps, event.message);
+    if (!persisted || persisted.role !== 'agent') return;
+    useChatStore.getState().appendMessage(persisted);
+    bootedOffsets[buddyId] = Math.max(bootedOffsets[buddyId] ?? sinceCursor, event.message.cursor);
     markBuddyRead(buddyId);
   }).then((handle) => {
     pendingStreams.delete(buddyId);
@@ -373,6 +443,16 @@ function stopPolling(buddyId: BuddyId): void {
 export function refreshPendingOutboxCount(): void {
   const count = getDeps().outboxRepo.count();
   useNetworkStore.getState().setPendingOutboxCount(count);
+}
+
+export function appendLocalDisplayMessageFlow(
+  buddyId: BuddyId,
+  text: string,
+  role: Message['role'] = 'user',
+): Message {
+  const message = persistLocalDisplayMessage(getDeps(), { buddyId, text, role });
+  useChatStore.getState().appendMessage(message);
+  return message;
 }
 
 /** Test/QA helper — reset all in-process state so a fresh init() can rewire. */

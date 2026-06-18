@@ -32,7 +32,10 @@ export const pushClient = {
    * (simulator/emulator, denied permission, missing projectId).
    */
   async ensurePermissionAndToken(): Promise<string | null> {
-    if (!easProjectId) return null;
+    if (!easProjectId) {
+      console.warn("[push] EAS projectId is missing; Expo push token cannot be created.");
+      return null;
+    }
 
     if (Platform.OS === "android") {
       await Notifications.setNotificationChannelAsync("default", {
@@ -46,12 +49,16 @@ export const pushClient = {
     if (status !== "granted") {
       ({ status } = await Notifications.requestPermissionsAsync());
     }
-    if (status !== "granted") return null;
+    if (status !== "granted") {
+      console.warn(`[push] Notification permission is ${status}; Expo push token unavailable.`);
+      return null;
+    }
 
     try {
       const { data } = await Notifications.getExpoPushTokenAsync({ projectId: easProjectId });
       return data;
-    } catch {
+    } catch (error) {
+      console.warn("[push] Failed to create Expo push token.", error);
       return null;
     }
   },

@@ -62,7 +62,7 @@ Relay stack:
 - better-sqlite3
 - GramJS (`telegram`)
 - Expo Server SDK
-- Gemini helper AI integration
+- OpenAI-compatible LLM integration for helper AI and TTS script rewriting, using Gemini by default
 
 ## 3. 현재 운영/설정 값
 
@@ -212,7 +212,7 @@ Rendering:
 
 ## 7. Helper AI
 
-Helper AI runs on the relay after an agent answer is complete enough to evaluate. It uses Gemini by default and outputs the app's fixed JSON shape.
+Helper AI runs on the relay after an agent answer is complete enough to evaluate. It uses Gemini through the OpenAI-compatible chat completions endpoint by default and outputs the app's fixed JSON shape.
 
 Supported helper item types:
 
@@ -231,6 +231,18 @@ Important rules:
 - Generate generally useful follow-ups, not prompts tied to a single known email/Youtube case.
 - Submit context should include the source message, preview/source URL if present, and recent conversation context, not only the last transcript.
 - Logs should include `helper.generate.*`, `helper.submit.*`, peer id, message id, item count, and source summary enough to debug missing chips.
+- TTS script/audio generation waits for helper pending/in-flight work to finish before using the configured LLM. Helper is automatic on each agent reply; TTS is user-triggered and should not starve helper generation.
+
+Current LLM defaults:
+
+- `GEMINI_API_KEY=...`
+- `LLM_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai`
+- `LLM_API_KEY` defaults to `GEMINI_API_KEY`
+- `LLM_MODEL=gemini-3.5-flash`
+- `LLM_MAX_TOKENS=32000`
+- `LLM_HELPER_MAX_TOKENS=1024`
+- `LLM_TTS_MAX_TOKENS=2048`
+- `LLM_CONCURRENCY=4`
 
 Display rule:
 

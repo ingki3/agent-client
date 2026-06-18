@@ -6,6 +6,7 @@ import {
   type Database,
 } from '@/infrastructure/storage/database';
 import { BuddiesRepository } from '@/infrastructure/storage/repositories/buddies-repo';
+import { MessageSyncStateRepository } from '@/infrastructure/storage/repositories/message-sync-state-repo';
 import { MessagesRepository } from '@/infrastructure/storage/repositories/messages-repo';
 import { OutboxRepository } from '@/infrastructure/storage/repositories/outbox-repo';
 import { TracesRepository } from '@/infrastructure/storage/repositories/traces-repo';
@@ -92,6 +93,13 @@ describe('Database migration', () => {
         'last_error',
         'enqueued_at',
       ]),
+    );
+
+    const syncStateCols = db
+      .all<TableInfoRow>('PRAGMA table_info(message_sync_state)')
+      .map((c) => c.name);
+    expect(syncStateCols).toEqual(
+      expect.arrayContaining(['peer_id', 'cursor', 'updated_at']),
     );
 
     db.close();
@@ -235,6 +243,22 @@ describe('Repository round-trips', () => {
     expect(repo.listOldestFirst()[0]?.messageId).toBe('cm-1');
     repo.remove('cm-1');
     expect(repo.count()).toBe(0);
+    db.close();
+  });
+
+  it('message sync state stores and advances cursor per peer', () => {
+    const db = openMigratedDb();
+    const repo = new MessageSyncStateRepository(db);
+
+    expect(repo.getCursor('1001')).toBe(0);
+    repo.advanceCursor('1001', 10, 1_000);
+    expect(repo.getCursor('1001')).toBe(10);
+
+    repo.advanceCursor('1001', 8, 2_000);
+    expect(repo.getCursor('1001')).toBe(10);
+
+    repo.advanceCursor('1001', 11, 3_000);
+    expect(repo.getCursor('1001')).toBe(11);
     db.close();
   });
 });

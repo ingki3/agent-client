@@ -9,6 +9,7 @@
  *
  * No-ops (null/empty) when no relay is configured.
  */
+import { Platform } from "react-native";
 import { config } from "../config";
 import { secureStore, SecureKeys } from "../storage/secureStore";
 import { uid } from "@/lib/id";
@@ -201,15 +202,27 @@ export const relayClient = {
   async register(expoPushToken: string, bots: RelayBot[]): Promise<boolean> {
     if (!config.relayBase || bots.length === 0) return false;
     const id = await deviceId();
-    const res = await fetch(`${config.relayBase}/register`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...(await authHeader()) },
-      body: JSON.stringify({ deviceId: id, expoPushToken, platform: "ios", gateway: config.gateway, bots }),
-    });
-    if (!res.ok) return false;
-    const body = (await res.json()) as { ok: boolean; deviceSecret?: string };
-    if (body.deviceSecret) await secureStore.set(SecureKeys.deviceSecret, body.deviceSecret);
-    return body.ok;
+    try {
+      console.log(
+        `[relay] register start device=${id} platform=${Platform.OS} bots=${bots.length} token_len=${expoPushToken.length}`,
+      );
+      const res = await fetch(`${config.relayBase}/register`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeader()) },
+        body: JSON.stringify({ deviceId: id, expoPushToken, platform: Platform.OS, gateway: config.gateway, bots }),
+      });
+      if (!res.ok) {
+        console.warn(`[relay] register failed status=${res.status}`);
+        return false;
+      }
+      const body = (await res.json()) as { ok: boolean; deviceSecret?: string };
+      if (body.deviceSecret) await secureStore.set(SecureKeys.deviceSecret, body.deviceSecret);
+      console.log(`[relay] register complete ok=${body.ok ? "true" : "false"}`);
+      return body.ok;
+    } catch (error) {
+      console.warn("[relay] register failed", error);
+      return false;
+    }
   },
 
   async unregister(botId?: number): Promise<void> {
@@ -309,13 +322,20 @@ export const relayClient = {
     const id = await secureStore.get(SecureKeys.deviceId);
     if (!id) return null;
     try {
-      const res = await fetch(`${config.relayBase}/auth/status?deviceId=${encodeURIComponent(id)}`, {
-        headers: { ...(await authHeader()) },
-      });
+      console.log(`[relay] auth status start device=${id}`);
+      const headers = { ...(await authHeader()) };
+      const res = await withTimeout((signal) =>
+        fetch(`${config.relayBase}/auth/status?deviceId=${encodeURIComponent(id)}`, {
+          headers,
+          signal,
+        }),
+      );
       if (!res.ok) return null;
       const body = (await res.json()) as { ok: boolean } & AuthStatus;
+      console.log(`[relay] auth status complete ok=${body.ok ? "true" : "false"} status=${body.status ?? "none"}`);
       return body.ok ? body : null;
-    } catch {
+    } catch (error) {
+      console.warn("[relay] auth status failed", error);
       return null;
     }
   },

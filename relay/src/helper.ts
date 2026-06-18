@@ -1,4 +1,5 @@
 import { config } from "./config.js";
+import { chatJson } from "./llm.js";
 import { log } from "./log.js";
 import type { HelperEnvelope, HelperItem } from "./types.js";
 
@@ -69,6 +70,19 @@ const envelopeSchema = {
   required: ["version", "items"],
 };
 
+const helperJsonContract = [
+  'Return exactly one JSON object. The first character must be "{".',
+  'Empty response shape: {"version":"1","items":[]}',
+  "Allowed item types:",
+  'quick_replies: {"type":"quick_replies","id":"qr_1","options":[{"label":"짧은 버튼명","value":"agent에게 보낼 구체적인 자연어 지시"}]}',
+  'single_select: {"type":"single_select","id":"sel_1","title":"제목","options":[{"label":"...","value":"..."}],"submitLabel":"전송"}',
+  'multi_select: {"type":"multi_select","id":"multi_1","title":"제목","options":[{"label":"...","value":"..."}],"submitLabel":"전송"}',
+  'input_form: {"type":"input_form","id":"form_1","title":"제목","fields":[{"id":"field_1","kind":"text","label":"입력"}],"submitLabel":"전송"}',
+  'confirm_action: {"type":"confirm_action","id":"confirm_1","title":"제목","confirmLabel":"진행"}',
+  'artifact_suggestion: {"type":"artifact_suggestion","id":"artifact_1","title":"제목","artifact":{"kind":"checklist","title":"제목","content":"내용"}}',
+  "Use 0 to 2 items. Prefer quick_replies. Use forms only when details are missing.",
+].join("\n");
+
 function validItem(x: unknown): x is HelperItem {
   if (!x || typeof x !== "object") return false;
   const it = x as Record<string, unknown>;
@@ -134,36 +148,26 @@ function normalize(raw: unknown, agentText = ""): HelperEnvelope {
 }
 
 async function generateHelperEnvelope(prompt: string, timeoutMs: number, agentText: string): Promise<HelperEnvelope> {
-  const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), timeoutMs);
-  try {
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(config.helperModel)}:generateContent?key=${encodeURIComponent(config.geminiApiKey)}`,
+  const raw = await chatJson<HelperEnvelope>({
+    label: "helper",
+    fallback: empty,
+    timeoutMs,
+    temperature: 0.1,
+    maxTokens: config.llmHelperMaxTokens,
+    messages: [
       {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        signal: ctrl.signal,
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: {
-            temperature: 0.2,
-            responseMimeType: "application/json",
-            responseSchema: envelopeSchema,
-          },
-        }),
+        role: "system",
+        content: [
+          "/no_think",
+          "You create follow-up UI JSON for a mobile messenger.",
+          "Never write prose, markdown, commentary, or reasoning.",
+          helperJsonContract,
+        ].join("\n"),
       },
-    );
-    if (!res.ok) {
-      log.warn(`helper gemini failed status=${res.status}`);
-      return empty;
-    }
-    const body = (await res.json()) as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> };
-    const text = body.candidates?.[0]?.content?.parts?.[0]?.text;
-    if (!text) return empty;
-    return normalize(JSON.parse(text), agentText);
-  } finally {
-    clearTimeout(t);
-  }
+      { role: "user", content: prompt },
+    ],
+  });
+  return normalize(raw, agentText);
 }
 
 export async function suggestHelperItems(input: {
@@ -171,12 +175,15 @@ export async function suggestHelperItems(input: {
   agentText: string;
   recentMessages: string[];
 }): Promise<HelperItem[]> {
-  if (!config.helperEnabled || !config.geminiApiKey || !input.agentText.trim()) return [];
+  if (!config.helperEnabled || !input.agentText.trim()) return [];
   const prompt = [
-    "You are a mobile messenger UI helper. Read the agent reply and create useful next-action UI for the human.",
+    "Read the agent reply and create useful next-action UI for the human.",
+    "Output JSON only according to the contract. No explanation.",
     "Return no items when no meaningful follow-up is needed, such as greetings, acknowledgements, short factual answers, or completed confirmations.",
     "Prefer at most two quick_replies for simple follow-ups. Use forms only when the user likely needs to choose or provide missing details.",
     "For long analytical answers, ranked lists, investment/market summaries, product comparisons, or multi-section reports, usually create 1-2 grounded quick_replies that help the human continue naturally.",
+    "If the reply compares options, mentions risks, lists next steps, or offers to prepare a checklist, create quick_replies.",
+    'Example quick reply item: {"type":"quick_replies","id":"qr_followup","options":[{"label":"리스크 비교","value":"방금 비교한 후보들의 보안 리스크와 운영 부담을 표로 정리해줘."},{"label":"체크리스트","value":"방금 답변 기준으로 내일 확인할 체크리스트를 만들어줘."}]}',
     "Good follow-ups for list/report answers include comparing named items, drilling into one named item, checking risks, asking for a concise checklist, or requesting current data for a named item.",
     "Do not create follow-ups only because a YouTube/video/webpage URL exists; the mobile client already renders URL preview cards.",
     "Create link-related follow-ups only when the agent reply contains actual link contents/results or explicitly asks what to do with the link.",

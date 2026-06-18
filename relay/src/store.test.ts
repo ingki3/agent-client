@@ -74,6 +74,10 @@ check("session activates with tgUserId", sess?.status === "active" && sess?.tg_u
 check("session string encrypted at rest", !!sess?.enc_session && !sess.enc_session.includes(fakeSession));
 check("session decrypts back", store.decryptSession(sess!) === fakeSession);
 check("activeSessions returns it", store.activeSessions().some((s) => s.device_id === "d1"));
+store.upsertUserSession({ deviceId: "d2", phone: "+100****0000", status: "pending" });
+store.setSessionString("d2", `${fakeSession}-newer`, 555);
+check("new login revokes older active session for same Telegram account", store.getUserSession("d1")?.status === "revoked" && !store.getUserSession("d1")?.enc_session);
+check("activeSessions keeps latest device per Telegram account", store.activeSessions().filter((s) => s.tg_user_id === 555).map((s) => s.device_id).join(",") === "d2");
 
 // peer + monotonic per-peer cursor (the getUpdates-offset stand-in)
 store.upsertPeer({ deviceId: "d1", peerId: 7001, username: "agentbot", title: "Agent", accessHash: "123" });

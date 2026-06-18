@@ -11,8 +11,11 @@
  */
 import type { BuddyId } from '@/domain/entities/Buddy';
 import type { Message } from '@/domain/entities/Message';
+import { filterLikelyDuplicateMessages } from '@/domain/messages/duplicateMessages';
+import { isHiddenHelperSubmitMessage } from '@/domain/messages/hiddenMessages';
 
-import { BuddyNotFoundError, type ChatUseCaseDeps, MissingBotTokenError, type RelayMessageSnapshot } from './types';
+import { persistRemoteMessage } from './persistRemoteMessage';
+import { BuddyNotFoundError, type ChatUseCaseDeps, MissingBotTokenError } from './types';
 
 export interface ReceiveUpdatesInput {
   buddyId: BuddyId;
@@ -73,6 +76,7 @@ export async function receiveUpdates(
       if (!useRelaySync && tg.from?.is_bot !== true) continue;
       // 우리 buddy 의 chat_id 와 매칭되는 것만 받는다.
       if (String(tg.chat.id) !== buddy.id) continue;
+      if (isHiddenHelperSubmitMessage({ role: tg.outgoing ? 'user' : 'agent', text: tg.text ?? '' })) continue;
 
       const serverId = String(tg.message_id);
       const richFields: Partial<Pick<Message, 'preview' | 'helperItems' | 'inlineKeyboard' | 'attachments' | 'text'>> = {};
@@ -108,9 +112,22 @@ export async function receiveUpdates(
       const insertedMessage = deps.messagesRepo.insertRemoteIfAbsent(message);
       if (insertedMessage) inserted.push(insertedMessage);
     }
+    if (useRelaySync) {
+      deps.messageSyncStateRepo.advanceCursor(buddy.id, newOffset, deps.now());
+    }
   });
 
-  return { newOffset, inserted, typing };
+  return { newOffset, inserted: visibleInserted(deps, buddy.id, inserted), typing };
+}
+
+function sortConversationChronology(messages: Message[]): Message[] {
+  return [...messages].sort((a, b) => {
+    if (a.createdAt !== b.createdAt) return a.createdAt - b.createdAt;
+    const aId = Number(a.id ?? a.clientMessageId);
+    const bId = Number(b.id ?? b.clientMessageId);
+    if (Number.isFinite(aId) && Number.isFinite(bId) && aId !== bId) return aId - bId;
+    return a.clientMessageId.localeCompare(b.clientMessageId);
+  });
 }
 
 async function receiveSnapshotSync(
@@ -125,46 +142,19 @@ async function receiveSnapshotSync(
   deps.db.transaction(() => {
     for (const snapshot of result.messages) {
       if (String(snapshot.peerId) !== buddyId) continue;
-      const serverId = String(snapshot.messageId);
-      const richFields: Partial<Pick<Message, 'preview' | 'helperItems' | 'inlineKeyboard' | 'attachments' | 'text'>> = snapshotRichFields(snapshot);
-      const existing = deps.messagesRepo.findByServerId(serverId) ?? deps.messagesRepo.findByClientMessageId(serverId);
-      if (existing) {
-        const merged = deps.messagesRepo.mergeRemoteFields(serverId, richFields);
-        if (merged) inserted.push(merged);
-        continue;
-      }
-      const message: Message = {
-        id: serverId,
-        clientMessageId: serverId,
-        buddyId,
-        role: snapshot.role,
-        text: snapshot.text,
-        status: 'sent',
-        createdAt: snapshot.date * 1000,
-        traceId: null,
-      };
-      if (richFields.preview) message.preview = richFields.preview;
-      if (richFields.helperItems) message.helperItems = richFields.helperItems;
-      if (richFields.inlineKeyboard !== undefined) message.inlineKeyboard = richFields.inlineKeyboard;
-      if (richFields.attachments) message.attachments = richFields.attachments;
-      const insertedMessage = deps.messagesRepo.insertRemoteIfAbsent(message);
-      if (insertedMessage) inserted.push(insertedMessage);
+      const persisted = persistRemoteMessage(deps, snapshot);
+      if (persisted) inserted.push(persisted);
     }
+    deps.messageSyncStateRepo.advanceCursor(buddyId, result.cursor, deps.now());
   });
 
-  return { newOffset: result.cursor, inserted, typing: false };
+  return { newOffset: result.cursor, inserted: visibleInserted(deps, buddyId, inserted), typing: false };
 }
 
-function snapshotRichFields(snapshot: RelayMessageSnapshot): Partial<Pick<Message, 'preview' | 'helperItems' | 'inlineKeyboard' | 'attachments' | 'text'>> {
-  const richFields: Partial<Pick<Message, 'preview' | 'helperItems' | 'inlineKeyboard' | 'attachments' | 'text'>> = {
-    text: snapshot.text,
-  };
-  if (snapshot.preview) richFields.preview = snapshot.preview;
-  if (snapshot.helperItems) richFields.helperItems = snapshot.helperItems;
-  if (snapshot.inlineKeyboard !== undefined) richFields.inlineKeyboard = snapshot.inlineKeyboard;
-  if (snapshot.media) {
-    const attachment = { kind: snapshot.media.kind, uri: snapshot.media.url, name: snapshot.media.name, mime: snapshot.media.mime };
-    richFields.attachments = snapshot.media.size == null ? [attachment] : [{ ...attachment, size: snapshot.media.size }];
-  }
-  return richFields;
+function visibleInserted(deps: ChatUseCaseDeps, buddyId: BuddyId, inserted: Message[]): Message[] {
+  const visibleIds = new Set(
+    filterLikelyDuplicateMessages(deps.messagesRepo.listByBuddy(buddyId, 200))
+      .map((message) => message.clientMessageId),
+  );
+  return sortConversationChronology(inserted).filter((message) => visibleIds.has(message.clientMessageId));
 }

@@ -86,6 +86,45 @@ describe('useChatStore', () => {
     expect(state.byBuddy.b1).toEqual(['cm-1']);
     expect(state.messages['cm-1']?.text).toBe('updated');
   });
+
+  it('appendMessage hides likely duplicate relay messages with different ids', () => {
+    const s = useChatStore.getState();
+    s.appendMessage({
+      ...makeMessage('6483'),
+      id: '6483',
+      role: 'agent',
+      text: 'same answer',
+      status: 'sent',
+      createdAt: 1780907571000,
+    });
+    s.appendMessage({
+      ...makeMessage('6484'),
+      id: '6484',
+      role: 'agent',
+      text: 'same answer',
+      status: 'sent',
+      createdAt: 1780907581000,
+    });
+
+    const state = useChatStore.getState();
+    expect(state.byBuddy.b1).toEqual(['6483']);
+    expect(state.messages['6484']).toBeUndefined();
+  });
+
+  it('does not keep hidden helper submit context messages', () => {
+    const s = useChatStore.getState();
+    const hidden = {
+      ...makeMessage('cm-hidden'),
+      text: '사용자가 아래 후속 액션을 선택했습니다.\n\n```agent_helper_response\n{"helperItemId":"x","value":"상세히 설명해줘"}\n```',
+    };
+    s.appendMessage(hidden);
+    expect(useChatStore.getState().byBuddy.b1).toBeUndefined();
+
+    s.setBuddyMessages('b1', [hidden, makeMessage('cm-visible')]);
+    const state = useChatStore.getState();
+    expect(state.byBuddy.b1).toEqual(['cm-visible']);
+    expect(state.messages['cm-hidden']).toBeUndefined();
+  });
 });
 
 describe('useTraceStore', () => {

@@ -12,7 +12,7 @@
  * Trace / 스트리밍 패널은 BIZ-#6 (다음 이슈) 범위.
  */
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActionSheetIOS,
   Alert,
@@ -21,19 +21,17 @@ import {
   Platform,
   Pressable,
   Text,
-  TextInput,
   useWindowDimensions,
   View,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { FlashList, type FlashListRef } from '@shopify/flash-list';
+import { FlashList } from '@shopify/flash-list';
 
 import { useBuddiesStore } from '@/application/stores/buddies-store';
 import { useChatStore } from '@/application/stores/chat-store';
 import { useNetworkStore } from '@/application/stores/network-store';
 import type { Message } from '@/domain/entities/Message';
-import { getLocationUrl, pickDocument } from '@/infrastructure/attachments';
-import { ChatBubbleV2, OfflineBanner } from '@/ui/chat';
+import { ChatBubbleV2, ChatComposer, OfflineBanner, useChatAutoScroll } from '@/ui/chat';
 import { useTheme } from '@/ui/theme/ThemeProvider';
 import { fontSize, radius, space, touch } from '@/ui/theme/tokens';
 
@@ -47,6 +45,7 @@ import {
   sendMessageFlow,
   startPolling,
 } from '../../_runtime/chat';
+import { useChatAttachments } from './useChatAttachments';
 
 export default function ChatScreen() {
   const { color } = useTheme();
@@ -71,31 +70,16 @@ export default function ChatScreen() {
   const [keyboardInset, setKeyboardInset] = useState(0);
   const [composerHeight, setComposerHeight] = useState(0);
   const [sending, setSending] = useState(false);
-  const [attaching, setAttaching] = useState(false);
-  const listRef = useRef<FlashListRef<Message>>(null);
-  const scrollRetryTimers = useRef<ReturnType<typeof setTimeout>[]>([]);
-  const nearBottomRef = useRef(true);
-  const prevMessageCountRef = useRef(0);
-
-  const scrollToLatest = useCallback((animated: boolean) => {
-    for (const timer of scrollRetryTimers.current) clearTimeout(timer);
-    scrollRetryTimers.current = [];
-    requestAnimationFrame(() => {
-      listRef.current?.scrollToEnd({ animated });
-      scrollRetryTimers.current = [
-        setTimeout(() => listRef.current?.scrollToEnd({ animated }), 80),
-        setTimeout(() => listRef.current?.scrollToEnd({ animated }), 240),
-      ];
-    });
-  }, []);
-
-  useEffect(
-    () => () => {
-      for (const timer of scrollRetryTimers.current) clearTimeout(timer);
-      scrollRetryTimers.current = [];
-    },
-    [],
-  );
+  const { listRef, scrollToLatest, handleScroll } = useChatAutoScroll(messages);
+  const {
+    attaching,
+    pendingAttachments,
+    openAttachMenu,
+    removePendingAttachment,
+    clearPendingAttachments,
+  } = useChatAttachments({
+    buddyId,
+  });
 
   // Boot the runtime + hydrate SQLite history once per screen mount.
   useEffect(() => {
@@ -107,17 +91,6 @@ export default function ChatScreen() {
     const stop = startPolling(buddyId);
     return () => stop();
   }, [buddyId, scrollToLatest]);
-
-  // Auto-scroll to bottom when new messages arrive (S-11 자동 스크롤).
-  useEffect(() => {
-    const prev = prevMessageCountRef.current;
-    prevMessageCountRef.current = messages.length;
-    if (messages.length === 0 || messages.length <= prev) return;
-    const latest = messages[messages.length - 1];
-    if (nearBottomRef.current || latest?.role === 'user') {
-      scrollToLatest(true);
-    }
-  }, [messages, scrollToLatest]);
 
   useEffect(() => {
     if (Platform.OS !== 'android') return undefined;
@@ -147,7 +120,38 @@ export default function ChatScreen() {
 
   const handleSend = useCallback(async () => {
     const text = draft.trim();
-    if (!text || !buddyId || sending) return;
+    const attachments = pendingAttachments;
+    if ((!text && !attachments.length) || !buddyId || sending) return;
+    if (attachments.length) {
+      setSending(true);
+      setDraft('');
+      clearPendingAttachments();
+      try {
+        const files = attachments
+          .filter((item) => item.type === 'file')
+          .map((item) => item.file);
+        const locations = attachments
+          .filter((item) => item.type === 'location')
+          .map((item) => item.url);
+        const locationText = locations.map((url) => `[내 위치 보기](${url})`).join('\n');
+        const fullCaption = [text, locationText].filter(Boolean).join('\n');
+
+        for (let index = 0; index < files.length; index += 1) {
+          const sent = await sendAttachmentFlow(buddyId, files[index]!, index === 0 ? fullCaption : '');
+          if (sent.status === 'failed') {
+            throw new Error('attachment_send_failed');
+          }
+        }
+        if (!files.length && fullCaption) {
+          await sendMessageFlow(buddyId, fullCaption);
+        }
+      } catch {
+        Alert.alert('첨부 전송 실패', '파일을 전송하지 못했습니다. relay 연결을 확인해 주세요.');
+      } finally {
+        setSending(false);
+      }
+      return;
+    }
     const createdAt = Date.now();
     const clientMessageId = `local-${createdAt}-${Math.random().toString(36).slice(2, 8)}`;
     const optimistic: Message = {
@@ -170,65 +174,15 @@ export default function ChatScreen() {
     } finally {
       setSending(false);
     }
-  }, [appendMessage, buddyId, draft, isOnline, sending]);
-
-  const handleAttachFiles = useCallback(async () => {
-    if (!buddyId || attaching) return;
-    setAttaching(true);
-    try {
-      const items = await pickDocument();
-      if (!items.length) return;
-      const caption = draft.trim();
-      if (caption) setDraft('');
-      for (let index = 0; index < items.length; index += 1) {
-        await sendAttachmentFlow(buddyId, items[index]!, index === 0 ? caption : '');
-      }
-    } catch {
-      Alert.alert('첨부 실패', '파일을 전송하지 못했습니다. relay 연결을 확인해 주세요.');
-    } finally {
-      setAttaching(false);
-    }
-  }, [attaching, buddyId, draft]);
-
-  const handleShareLocation = useCallback(async () => {
-    if (!buddyId || attaching) return;
-    setAttaching(true);
-    try {
-      const url = await getLocationUrl();
-      if (!url) {
-        Alert.alert('위치 전송 실패', '위치 권한을 허용했는지 확인해 주세요.');
-        return;
-      }
-      await sendMessageFlow(buddyId, url);
-    } catch {
-      Alert.alert('위치 전송 실패', '현재 위치를 전송하지 못했습니다.');
-    } finally {
-      setAttaching(false);
-    }
-  }, [attaching, buddyId]);
-
-  const handleOpenAttachMenu = useCallback(() => {
-    if (attaching) return;
-    if (Platform.OS === 'ios') {
-      ActionSheetIOS.showActionSheetWithOptions(
-        {
-          options: ['파일 첨부', '위치 보내기', '취소'],
-          cancelButtonIndex: 2,
-          title: '첨부',
-        },
-        (idx) => {
-          if (idx === 0) void handleAttachFiles();
-          else if (idx === 1) void handleShareLocation();
-        },
-      );
-      return;
-    }
-    Alert.alert('첨부', undefined, [
-      { text: '파일 첨부', onPress: () => void handleAttachFiles() },
-      { text: '위치 보내기', onPress: () => void handleShareLocation() },
-      { text: '취소', style: 'cancel' },
-    ]);
-  }, [attaching, handleAttachFiles, handleShareLocation]);
+  }, [
+    appendMessage,
+    buddyId,
+    clearPendingAttachments,
+    draft,
+    isOnline,
+    pendingAttachments,
+    sending,
+  ]);
 
   const handleLongPress = useCallback(
     (message: Message) => {
@@ -308,11 +262,7 @@ export default function ChatScreen() {
           ref={listRef}
           data={messages}
           keyExtractor={(m) => m.clientMessageId}
-          onScroll={(event) => {
-            const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
-            const distanceFromBottom = contentSize.height - (contentOffset.y + layoutMeasurement.height);
-            nearBottomRef.current = distanceFromBottom < 96;
-          }}
+          onScroll={handleScroll}
           scrollEventThrottle={100}
           renderItem={({ item }) => (
             <ChatBubbleV2 message={item} onLongPress={handleLongPress} />
@@ -339,101 +289,19 @@ export default function ChatScreen() {
           }}
         />
 
-        <View
-          onLayout={(event) => setComposerHeight(event.nativeEvent.layout.height)}
-          style={{
-            flexDirection: 'row',
-            alignItems: 'flex-end',
-            paddingHorizontal: space[3],
-            paddingTop: space[2],
-            paddingBottom: space[2],
-            borderTopWidth: 1,
-            borderTopColor: color('border'),
-            backgroundColor: color('surface'),
-            gap: space[2],
-            ...(Platform.OS === 'android'
-              ? {
-                  position: 'absolute',
-                  left: 0,
-                  right: 0,
-                  bottom: composerBottomInset,
-                }
-              : null),
-          }}
-        >
-          <Pressable
-            onPress={handleOpenAttachMenu}
-            disabled={attaching}
-            accessibilityRole="button"
-            accessibilityLabel="첨부"
-            style={{
-              width: touch.min,
-              height: touch.min,
-              borderRadius: radius.full,
-              backgroundColor: color('surface-elevated'),
-              alignItems: 'center',
-              justifyContent: 'center',
-              opacity: attaching ? 0.6 : 1,
-            }}
-          >
-            <Text style={{ color: color('text-primary'), fontSize: fontSize['title-sm'] }}>＋</Text>
-          </Pressable>
-
-          <View
-            style={{
-              flex: 1,
-              minHeight: touch.min,
-              maxHeight: 96,
-              backgroundColor: color('surface-elevated'),
-              borderRadius: radius.xl,
-              paddingHorizontal: space[3],
-              paddingVertical: 0,
-              borderWidth: 1,
-              borderColor: color('border'),
-              justifyContent: 'center',
-            }}
-          >
-            <TextInput
-              value={draft}
-              onChangeText={setDraft}
-              placeholder={placeholder}
-              placeholderTextColor={color('text-secondary')}
-              multiline
-              style={{
-                fontSize: fontSize.body,
-                color: color('text-primary'),
-                maxHeight: 94,
-                minHeight: touch.min - 2,
-                paddingVertical: 0,
-                includeFontPadding: false,
-              }}
-              editable
-              selectTextOnFocus={false}
-              textAlignVertical="center"
-              returnKeyType="send"
-              blurOnSubmit={false}
-            />
-          </View>
-          <Pressable
-            onPress={handleSend}
-            disabled={!draft.trim() || sending}
-            accessibilityRole="button"
-            accessibilityLabel="메시지 보내기"
-            style={{
-              minWidth: touch.min,
-              minHeight: touch.min,
-              borderRadius: radius.full,
-              backgroundColor: draft.trim() && !sending ? color('primary') : color('border'),
-              alignItems: 'center',
-              justifyContent: 'center',
-              paddingHorizontal: space[3],
-            }}
-          >
-            <Text style={{ color: color('on-primary'), fontWeight: '700', fontSize: fontSize.body }}>
-              전송
-            </Text>
-          </Pressable>
-        </View>
+        <ChatComposer
+          draft={draft}
+          placeholder={placeholder}
+          sending={sending}
+          attaching={attaching}
+          pendingAttachments={pendingAttachments}
+          bottomInset={composerBottomInset}
+          onDraftChange={setDraft}
+          onSend={handleSend}
+          onOpenAttachMenu={openAttachMenu}
+          onRemovePendingAttachment={removePendingAttachment}
+          onLayoutHeight={setComposerHeight}
+        />
       </KeyboardAvoidingView>
     </SafeAreaView>
   );

@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import { mkdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { config } from "./config.js";
+import { chatJson } from "./llm.js";
 import { log } from "./log.js";
 import type { TtsMode } from "./types.js";
 
@@ -34,19 +35,35 @@ function stripForSpeech(input: string): string {
 }
 
 function modeInstruction(mode: TtsMode): string {
-  if (mode === "brief") return "Create a 30 to 60 second conversational Korean spoken summary.";
-  if (mode === "action_items") {
-    return "Create a concise Korean spoken script focused on useful next actions, decisions, or things to verify. If the reply has no literal tasks, frame them as optional next checks.";
+  if (mode === "brief") {
+    return [
+      "모드: 요약.",
+      "원문을 그대로 읽지 말고, 사람이 읽어주는 짧은 오디오 스크립트로 새로 작성하세요.",
+      "핵심 내용만 골라 30~60초 안에 들을 수 있게 짧게 말하세요.",
+      "세부 근거와 주변 설명은 과감히 줄이고, 사용자가 지금 알아야 할 결론을 먼저 말하세요.",
+    ].join("\n");
   }
-  return "Create a natural Korean spoken explanation for listening, around 1 to 3 minutes.";
+  if (mode === "action_items") {
+    return [
+      "모드: 다음 액션.",
+      "원문을 그대로 읽지 말고, 사람이 읽어주는 실행 중심 오디오 스크립트로 새로 작성하세요.",
+      "글 내용을 보고 사용자가 판단해야 할 것, 확인해야 할 것, 해야 할 액션을 중심으로 설명하세요.",
+      "명시적인 할 일이 없어도 다음에 검토할 선택지나 의사결정 포인트를 정리하세요.",
+      "액션은 우선순위가 느껴지게 말하되, 억지로 없는 일을 만들지는 마세요.",
+    ].join("\n");
+  }
+  return [
+    "모드: 대화형.",
+    "원문을 그대로 읽지 말고, 사람이 옆에서 읽어주는 방식의 자세한 오디오 스크립트로 새로 작성하세요.",
+    "사용자가 화면을 보지 않아도 맥락을 이해하도록 중요한 배경, 이유, 흐름을 상세히 설명하세요.",
+    "대화하듯 자연스럽게 풀어 말하되, 1~3분 정도로 듣기 편하게 구성하세요.",
+  ].join("\n");
 }
 
-async function generateScriptWithGemini(text: string, mode: TtsMode): Promise<string | null> {
-  if (!config.geminiApiKey) return null;
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 30000);
-  const prompt = [
+export function buildTtsScriptPrompt(text: string, mode: TtsMode): string {
+  return [
     "You rewrite an AI agent reply into a Korean TTS script for a mobile messenger.",
+    "듣기 요청이 들어오면 기본적으로 문서를 낭독하지 말고, 사람이 읽어주는 오디오용 스크립트를 새로 작성하세요.",
     modeInstruction(mode),
     "Use natural spoken Korean, as if a helpful person is explaining it in a chat.",
     "Preserve the agent's recognizable speech level, energy, recurring phrases, and light personality when they are visible in the reply.",
@@ -57,45 +74,41 @@ async function generateScriptWithGemini(text: string, mode: TtsMode): Promise<st
     "",
     `Agent reply:\n${limit(text, config.ttsMaxInputChars)}`,
   ].join("\n");
-  try {
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(config.helperModel)}:generateContent?key=${encodeURIComponent(config.geminiApiKey)}`,
+}
+
+async function generateScriptWithLlm(text: string, mode: TtsMode): Promise<string | null> {
+  const prompt = buildTtsScriptPrompt(text, mode);
+  const parsed = await chatJson<ScriptEnvelope>({
+    label: "tts script",
+    fallback: {},
+    timeoutMs: 30000,
+    temperature: 0.1,
+    maxTokens: config.llmTtsMaxTokens,
+    messages: [
       {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        signal: ctrl.signal,
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: {
-            temperature: 0.2,
-            responseMimeType: "application/json",
-            responseSchema: scriptSchema,
-          },
-        }),
+        role: "system",
+        content: [
+          "/no_think",
+          "You create Korean text-to-speech scripts.",
+          "Return ONLY valid JSON. Do not wrap it in markdown.",
+          "Do not explain your reasoning. Do not include analysis text.",
+          "The JSON must match this schema:",
+          JSON.stringify(scriptSchema),
+        ].join("\n"),
       },
-    );
-    if (!res.ok) {
-      log.warn(`tts script gemini failed status=${res.status}`);
-      return null;
-    }
-    const body = (await res.json()) as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> };
-    const raw = body.candidates?.[0]?.content?.parts?.[0]?.text;
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as ScriptEnvelope;
-    return typeof parsed.script === "string" ? stripForSpeech(parsed.script) : null;
-  } catch (e) {
-    log.warn(`tts script failed: ${(e as { message?: string })?.message ?? String(e)}`);
-    return null;
-  } finally {
-    clearTimeout(timer);
-  }
+      { role: "user", content: prompt },
+    ],
+  });
+  return typeof parsed.script === "string" ? stripForSpeech(parsed.script) : null;
 }
 
 export async function createTtsScript(input: { text: string; mode: TtsMode }): Promise<string> {
   const base = stripForSpeech(limit(input.text, config.ttsMaxInputChars));
   if (!base) return "";
-  const scripted = await generateScriptWithGemini(base, input.mode);
-  return limit(scripted || base, input.mode === "brief" ? 900 : 2400);
+  const scripted = await generateScriptWithLlm(base, input.mode);
+  const minUsefulLength = input.mode === "brief" ? 24 : 40;
+  const usable = scripted && scripted.length >= minUsefulLength ? scripted : base;
+  return limit(usable, input.mode === "brief" ? 900 : 2400);
 }
 
 function cacheKeyOf(input: { text: string; script: string; mode: TtsMode; voice: string; rate: string }): string {

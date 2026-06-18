@@ -369,9 +369,20 @@ export const store = {
   },
 
   setSessionString(deviceId: string, sessionString: string, tgUserId: number) {
-    db.prepare(
-      `UPDATE user_sessions SET enc_session=?, tg_user_id=?, status='active', last_seen_at=? WHERE device_id=?`,
-    ).run(encrypt(sessionString), tgUserId, Date.now(), deviceId);
+    const now = Date.now();
+    db.transaction(() => {
+      db.prepare(
+        `UPDATE user_sessions SET enc_session=?, tg_user_id=?, status='active', last_seen_at=? WHERE device_id=?`,
+      ).run(encrypt(sessionString), tgUserId, now, deviceId);
+      // One Telegram account can be logged in from several historical app device IDs.
+      // Reconnecting all saved StringSessions attaches duplicate MTProto receivers and
+      // makes helper/push generation run multiple times. Keep the newest device active.
+      db.prepare(
+        `UPDATE user_sessions
+         SET status='revoked', enc_session=NULL, last_seen_at=?
+         WHERE tg_user_id=? AND device_id<>? AND status='active'`,
+      ).run(now, tgUserId, deviceId);
+    })();
   },
 
   getUserSession(deviceId: string): UserSessionRow | undefined {
@@ -383,7 +394,19 @@ export const store = {
   /** Active sessions with a saved string — the set to reconnect on boot. */
   activeSessions(): UserSessionRow[] {
     return db
-      .prepare("SELECT * FROM user_sessions WHERE status='active' AND enc_session IS NOT NULL")
+      .prepare(
+        `SELECT *
+         FROM (
+           SELECT *,
+             ROW_NUMBER() OVER (
+               PARTITION BY COALESCE(tg_user_id, device_id)
+               ORDER BY last_seen_at DESC, created_at DESC
+             ) AS rn
+           FROM user_sessions
+           WHERE status='active' AND enc_session IS NOT NULL
+         )
+         WHERE rn=1`,
+      )
       .all() as UserSessionRow[];
   },
 

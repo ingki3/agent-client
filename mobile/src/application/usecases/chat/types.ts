@@ -11,6 +11,7 @@ import type { BuddyId } from '@/domain/entities/Buddy';
 import type { Attachment, HelperItem, InlineKeyboard, LinkPreview } from '@/domain/entities/Message';
 import type { Database } from '@/infrastructure/storage/database';
 import type { BuddiesRepository } from '@/infrastructure/storage/repositories/buddies-repo';
+import type { MessageSyncStateRepository } from '@/infrastructure/storage/repositories/message-sync-state-repo';
 import type { MessagesRepository } from '@/infrastructure/storage/repositories/messages-repo';
 import type { OutboxRepository } from '@/infrastructure/storage/repositories/outbox-repo';
 import type { TgUpdate } from '@/infrastructure/api/telegramBotApi';
@@ -48,6 +49,7 @@ export type RelaySnapshotSyncResult = {
 export interface ChatUseCaseDeps {
   db: Database;
   buddiesRepo: BuddiesRepository;
+  messageSyncStateRepo: MessageSyncStateRepository;
   messagesRepo: MessagesRepository;
   outboxRepo: OutboxRepository;
   tokenStore: ChatBotTokenPort;

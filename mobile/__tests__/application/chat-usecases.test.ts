@@ -2,6 +2,7 @@ import { BotApiClient } from '@/infrastructure/api/bot-api-client';
 import { createBetterSqlite3Database } from '@/infrastructure/storage/adapters/better-sqlite3-adapter';
 import { applyMigrations, type Database } from '@/infrastructure/storage/database';
 import { BuddiesRepository } from '@/infrastructure/storage/repositories/buddies-repo';
+import { MessageSyncStateRepository } from '@/infrastructure/storage/repositories/message-sync-state-repo';
 import { MessagesRepository } from '@/infrastructure/storage/repositories/messages-repo';
 import { OutboxRepository } from '@/infrastructure/storage/repositories/outbox-repo';
 
@@ -9,6 +10,9 @@ import {
   type ChatBotTokenPort,
   type ChatUseCaseDeps,
   flushOutbox,
+  listMessages,
+  persistLocalDisplayMessage,
+  persistRemoteMessage,
   receiveUpdates,
   retryMessage,
   sendMessage,
@@ -73,6 +77,7 @@ function openDeps(opts: {
   const deps: ChatUseCaseDeps & { db: Database } = {
     db,
     buddiesRepo,
+    messageSyncStateRepo: new MessageSyncStateRepository(db),
     messagesRepo: new MessagesRepository(db),
     outboxRepo: new OutboxRepository(db),
     tokenStore: new FakeTokenStore(opts.tokenOverride ?? { '1001': 'token-1001' }),
@@ -379,6 +384,42 @@ describe('receiveUpdates', () => {
     deps.db.close();
   });
 
+  it('hides helper submit context messages from relay update sync', async () => {
+    const deps = openDeps({
+      tokenOverride: {},
+      relaySyncMessages: async () => [
+        {
+          update_id: 6114000,
+          message: {
+            message_id: 6114,
+            date: 1780574725,
+            chat: { id: 1001, type: 'private' },
+            from: { id: 5, is_bot: false, first_name: 'User' },
+            outgoing: true,
+            text: '사용자가 아래 후속 액션을 선택했습니다.\n\n```agent_helper_response\n{"value":"상세히 설명해줘"}\n```',
+          },
+        },
+        {
+          update_id: 6114001,
+          message: {
+            message_id: 6115,
+            date: 1780574726,
+            chat: { id: 1001, type: 'private' },
+            from: { id: 1001, is_bot: true, first_name: 'Echo' },
+            outgoing: false,
+            text: '후속 답변입니다.',
+          },
+        },
+      ],
+    });
+    const outcome = await receiveUpdates(deps, { buddyId: '1001', offset: 6114000 });
+    expect(outcome.inserted).toHaveLength(1);
+    expect(outcome.inserted[0]?.text).toBe('후속 답변입니다.');
+    expect(deps.messagesRepo.findByServerId('6114')).toBeNull();
+    expect(deps.messagesRepo.listByBuddy('1001')).toHaveLength(1);
+    deps.db.close();
+  });
+
   it('persists relay message snapshots by upserting the same message_id', async () => {
     const deps = openDeps({
       tokenOverride: {},
@@ -419,6 +460,279 @@ describe('receiveUpdates', () => {
     expect(persisted?.text).toBe('최종 답변입니다.');
     expect(persisted?.helperItems).toHaveLength(1);
     expect(deps.messagesRepo.listByBuddy('1001')).toHaveLength(1);
+    expect(deps.messageSyncStateRepo.getCursor('1001')).toBe(8);
+    deps.db.close();
+  });
+
+  it('returns newly synced relay snapshots in conversation chronology even when cursor order reflects later edits', async () => {
+    const deps = openDeps({
+      tokenOverride: {},
+      relaySyncMessageSnapshots: async () => ({
+        cursor: 101,
+        messages: [
+          {
+            id: '5844',
+            peerId: 1001,
+            messageId: 5844,
+            role: 'agent',
+            text: '06:00 scheduled brief',
+            status: 'complete',
+            date: 1780434019,
+            updatedAt: 1,
+            cursor: 30,
+          },
+          {
+            id: '5829',
+            peerId: 1001,
+            messageId: 5829,
+            role: 'agent',
+            text: '23:53 answer completed later',
+            status: 'complete',
+            date: 1780412027,
+            updatedAt: 2,
+            cursor: 100,
+          },
+        ],
+      }),
+    });
+
+    const outcome = await receiveUpdates(deps, { buddyId: '1001', offset: 0 });
+
+    expect(outcome.newOffset).toBe(101);
+    expect(outcome.inserted.map((message) => message.id)).toEqual(['5829', '5844']);
+    expect(deps.messagesRepo.listByBuddy('1001').map((message) => message.id)).toEqual(['5829', '5844']);
+    deps.db.close();
+  });
+
+  it('hides duplicate relay snapshots with different message_id but identical answer text', async () => {
+    const deps = openDeps({
+      tokenOverride: {},
+      relaySyncMessageSnapshots: async () => ({
+        cursor: 3690,
+        messages: [
+          {
+            id: '6483',
+            peerId: 1001,
+            messageId: 6483,
+            role: 'agent',
+            text: "OpenAI가 준비 중인 **'AI OS'**는 단순한 챗봇 서비스인 ChatGPT를 넘어섭니다.",
+            status: 'complete',
+            date: 1780907571,
+            updatedAt: 1,
+            cursor: 3685,
+          },
+          {
+            id: '6484',
+            peerId: 1001,
+            messageId: 6484,
+            role: 'agent',
+            text: "OpenAI가 준비 중인 **'AI OS'**는 단순한 챗봇 서비스인 ChatGPT를 넘어섭니다.",
+            status: 'complete',
+            date: 1780907581,
+            updatedAt: 2,
+            cursor: 3686,
+          },
+        ],
+      }),
+    });
+
+    const outcome = await receiveUpdates(deps, { buddyId: '1001', offset: 0 });
+
+    expect(outcome.inserted.map((message) => message.id)).toEqual(['6483']);
+    expect(listMessages(deps, { buddyId: '1001' }).map((message) => message.id)).toEqual(['6483']);
+    deps.db.close();
+  });
+
+  it('hides helper submit context messages from relay snapshot sync', async () => {
+    const deps = openDeps({
+      tokenOverride: {},
+      relaySyncMessageSnapshots: async () => ({
+        cursor: 10,
+        messages: [
+          {
+            id: '6114',
+            peerId: 1001,
+            messageId: 6114,
+            role: 'user',
+            text: '사용자가 아래 후속 액션을 선택했습니다.\n\n```agent_helper_response\n{"value":"상세히 설명해줘"}\n```',
+            status: 'complete',
+            date: 1780574725,
+            updatedAt: 1,
+            cursor: 8,
+          },
+          {
+            id: '6115',
+            peerId: 1001,
+            messageId: 6115,
+            role: 'agent',
+            text: '후속 답변입니다.',
+            status: 'complete',
+            date: 1780574726,
+            updatedAt: 2,
+            cursor: 9,
+          },
+        ],
+      }),
+    });
+    const outcome = await receiveUpdates(deps, { buddyId: '1001', offset: 0 });
+    expect(outcome.inserted).toHaveLength(1);
+    expect(outcome.inserted[0]?.text).toBe('후속 답변입니다.');
+    expect(deps.messagesRepo.findByServerId('6114')).toBeNull();
+    expect(deps.messagesRepo.listByBuddy('1001')).toHaveLength(1);
+    expect(outcome.newOffset).toBe(10);
+    expect(deps.messageSyncStateRepo.getCursor('1001')).toBe(10);
+    deps.db.close();
+  });
+
+  it('hides previously persisted helper submit context messages from history', () => {
+    const deps = openDeps({});
+    deps.messagesRepo.insert({
+      id: '6114',
+      clientMessageId: '6114',
+      buddyId: '1001',
+      role: 'user',
+      text: '사용자가 아래 후속 액션을 선택했습니다.\n\n```agent_helper_response\n{"value":"상세히 설명해줘"}\n```',
+      status: 'sent',
+      createdAt: 1780574725000,
+      traceId: null,
+    });
+    deps.messagesRepo.insert({
+      id: '6115',
+      clientMessageId: '6115',
+      buddyId: '1001',
+      role: 'agent',
+      text: '후속 답변입니다.',
+      status: 'sent',
+      createdAt: 1780574726000,
+      traceId: null,
+    });
+
+    const history = listMessages(deps, { buddyId: '1001' });
+    expect(history.map((message) => message.text)).toEqual(['후속 답변입니다.']);
+    deps.db.close();
+  });
+
+  it('hides previously persisted duplicate answer messages from history', () => {
+    const deps = openDeps({});
+    deps.messagesRepo.insert({
+      id: '6483',
+      clientMessageId: '6483',
+      buddyId: '1001',
+      role: 'agent',
+      text: "OpenAI가 준비 중인 **'AI OS'**는 단순한 챗봇 서비스인 ChatGPT를 넘어섭니다.",
+      status: 'sent',
+      createdAt: 1780907571000,
+      traceId: null,
+    });
+    deps.messagesRepo.insert({
+      id: '6484',
+      clientMessageId: '6484',
+      buddyId: '1001',
+      role: 'agent',
+      text: "OpenAI가 준비 중인 **'AI OS'**는 단순한 챗봇 서비스인 ChatGPT를 넘어섭니다.",
+      status: 'sent',
+      createdAt: 1780907581000,
+      traceId: null,
+    });
+
+    const history = listMessages(deps, { buddyId: '1001' });
+    expect(history.map((message) => message.id)).toEqual(['6483']);
+    deps.db.close();
+  });
+});
+
+describe('persistRemoteMessage', () => {
+  it('persists stream snapshots and advances local relay cursor', () => {
+    const deps = openDeps({ tokenOverride: {} });
+
+    const message = persistRemoteMessage(deps, {
+      id: '7001',
+      peerId: 1001,
+      messageId: 7001,
+      role: 'agent',
+      text: 'streamed answer',
+      status: 'complete',
+      date: 1780575000,
+      updatedAt: 5,
+      cursor: 12,
+      helperItems: [{ type: 'quick_replies', id: 'next', options: [{ label: '더 보기', value: '더 설명해줘' }] }],
+    });
+
+    expect(message?.text).toBe('streamed answer');
+    expect(deps.messagesRepo.findByServerId('7001')?.helperItems).toHaveLength(1);
+    expect(deps.messageSyncStateRepo.getCursor('1001')).toBe(12);
+    deps.db.close();
+  });
+
+  it('merges helper_updated snapshot into an existing local message row', () => {
+    const deps = openDeps({ tokenOverride: {} });
+
+    persistRemoteMessage(deps, {
+      id: '7002',
+      peerId: 1001,
+      messageId: 7002,
+      role: 'agent',
+      text: 'answer without helper yet',
+      status: 'complete',
+      date: 1780575001,
+      updatedAt: 6,
+      cursor: 13,
+    });
+
+    const merged = persistRemoteMessage(deps, {
+      id: '7002',
+      peerId: 1001,
+      messageId: 7002,
+      role: 'agent',
+      text: 'answer without helper yet',
+      status: 'complete',
+      date: 1780575001,
+      updatedAt: 7,
+      cursor: 14,
+      helperItems: [{ type: 'quick_replies', id: 'follow', options: [{ label: '요약', value: '요약해줘' }] }],
+    });
+
+    expect(merged?.helperItems).toHaveLength(1);
+    expect(deps.messagesRepo.listByBuddy('1001')).toHaveLength(1);
+    expect(deps.messageSyncStateRepo.getCursor('1001')).toBe(14);
+    deps.db.close();
+  });
+
+  it('supports stream message_updated/helper_updated by persisting repeated snapshots', () => {
+    const deps = openDeps({ tokenOverride: {} });
+    const first = persistRemoteMessage(deps, {
+      id: '7100', peerId: 1001, messageId: 7100, role: 'agent', text: 'partial',
+      status: 'streaming', date: 1780575100, updatedAt: 1, cursor: 20,
+    });
+    const second = persistRemoteMessage(deps, {
+      id: '7100', peerId: 1001, messageId: 7100, role: 'agent', text: 'final',
+      status: 'complete', date: 1780575100, updatedAt: 2, cursor: 21,
+      helperItems: [{ type: 'quick_replies', id: 'q', options: [{ label: 'OK', value: 'ok' }] }],
+    });
+
+    expect(first?.text).toBe('partial');
+    expect(second?.text).toBe('final');
+    expect(deps.messagesRepo.listByBuddy('1001')).toHaveLength(1);
+    expect(deps.messageSyncStateRepo.getCursor('1001')).toBe(21);
+    deps.db.close();
+  });
+});
+
+describe('persistLocalDisplayMessage', () => {
+  it('stores user-facing helper action bubbles in SQLite', () => {
+    const deps = openDeps({ tokenOverride: {} });
+
+    const message = persistLocalDisplayMessage(deps, {
+      buddyId: '1001',
+      role: 'user',
+      text: '상세히 설명해줘',
+      clientMessageId: 'helper-user-1',
+      createdAt: 1780575200000,
+    });
+
+    expect(message.clientMessageId).toBe('helper-user-1');
+    expect(deps.messagesRepo.findByClientMessageId('helper-user-1')?.text).toBe('상세히 설명해줘');
+    expect(listMessages(deps, { buddyId: '1001' }).map((item) => item.text)).toEqual(['상세히 설명해줘']);
     deps.db.close();
   });
 });
