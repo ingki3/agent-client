@@ -1,0 +1,53 @@
+{
+  "auth": {
+    "phone": {
+      "title": "Enter your phone number",
+      "placeholder": "+1 555 123 4567",
+      "next": "Next"
+    },
+    "otp": {
+      "title": "Enter the verification code",
+      "resend": "Resend"
+    }
+  },
+  "buddies": {
+    "title": "Buddies",
+    "empty": {
+      "title": "No buddies yet",
+      "cta": "Add your first buddy"
+    },
+    "add": "Add buddy"
+  },
+  "chat": {
+    "input": {
+      "placeholder": "Type a message"
+    },
+    "actions": {
+      "send": "Send",
+      "stop": "Stop",
+      "retry": "Retry"
+    },
+    "status": {
+      "sending": "Sending",
+      "sent": "Sent",
+      "failed": "Failed"
+    },
+    "trace": {
+      "thinking": "Thinking",
+      "tool_call": "Tool call",
+      "tool_result": "Tool result"
+    }
+  },
+  "settings": {
+    "title": "Settings",
+    "about": "About",
+    "signOut": "Sign out"
+  },
+  "errors": {
+    "network": "Check your network connection",
+    "authExpired": "Please sign in again",
+    "botTokenInvalid": "Bot token is invalid",
+    "streamLost": "Response is delayed",
+    "unknown": "Something went wrong"
+  }
+}

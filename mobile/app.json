@@ -1,0 +1,43 @@
+{
+  "expo": {
+    "name": "Agent Client",
+    "slug": "agent-client-mockup",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "scheme": "agentclient",
+    "userInterfaceStyle": "automatic",
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "dev.simplist.agentclient.mockup"
+    },
+    "android": {
+      "package": "dev.simplist.agentclient.mockup",
+      "usesCleartextTraffic": true,
+      "permissions": [
+        "POST_NOTIFICATIONS"
+      ],
+      "adaptiveIcon": {
+        "backgroundColor": "#2563EB"
+      }
+    },
+    "web": {
+      "bundler": "metro",
+      "output": "static"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-secure-store",
+      "expo-image",
+      "expo-notifications"
+    ],
+    "experiments": {
+      "typedRoutes": true
+    },
+    "extra": {
+      "relayBase": "http://telegram-relay.2prostream.com",
+      "eas": {
+        "projectId": "3a5f18ec-c8c8-4eed-94b1-4d1e593efca2"
+      }
+    }
+  }
+}

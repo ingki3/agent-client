@@ -1,0 +1,39 @@
+# USER_FLOW §3.1 — 신규 가입 → 첫 채팅 (mock buddy). Validates auth + send + streamed reply.
+appId: dev.simplist.agentclient.mockup
+---
+- launchApp:
+    clearState: true
+- runFlow: subflows/login.yaml
+- tapOn: "Work Buddy"
+- waitForAnimationToEnd
+- assertVisible:
+    id: "chatInput"
+- tapOn:
+    id: "chatInput"
+- waitForAnimationToEnd
+# Maestro can't type non-ASCII on Android (adb input is ASCII-only — issue #146),
+# so type Korean on iOS and an ASCII equivalent on Android. The mock reply branches on
+# message *length*, not content, so both paths exercise the same send→reply→trace flow.
+- runFlow:
+    when:
+      platform: iOS
+    commands:
+      - inputText: "안녕"
+      - tapOn:
+          id: "chatSend"
+      - assertVisible:
+          text: ".*안녕.*" # optimistic user bubble
+- runFlow:
+    when:
+      platform: Android
+    commands:
+      - inputText: "hello"
+      - tapOn:
+          id: "chatSend"
+      - assertVisible:
+          text: ".*hello.*" # optimistic user bubble
+# Agent reply streams in; Work Buddy supports trace, so the summary chip appears.
+- extendedWaitUntil:
+    visible:
+      id: "traceToggle"
+    timeout: 15000
