@@ -1,0 +1,17 @@
+node_modules/
+.expo/
+dist/
+web-build/
+*.log
+.DS_Store
+ios/
+android/
+.env*
+google-services.json
+.secrets/
+*-service-account.json
+
+
+# @generated expo-cli
+
+# @generated expo-cli

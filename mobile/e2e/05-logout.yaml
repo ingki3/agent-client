@@ -1,0 +1,17 @@
+# 초기화(로그아웃) (S-20 → D-05) → onboarding(사용자 ID 입력) 복귀.
+appId: dev.simplist.agentclient.mockup
+---
+- launchApp:
+    clearState: true
+- runFlow: subflows/login.yaml
+- tapOn:
+    id: "settingsButton"
+- assertVisible: "사용자 ID"
+- tapOn: "초기화 (로그아웃)" # settings row → opens D-05
+- assertVisible: "초기화할까요?"
+- tapOn:
+    id: "logoutConfirm"
+# reset → signOut → router.replace → splash → onboarding is async; wait for it.
+- extendedWaitUntil:
+    visible: "Agent Client" # back to onboarding (user-id entry)
+    timeout: 10000

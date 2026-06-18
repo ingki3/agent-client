@@ -1,0 +1,152 @@
+import type { FastifyInstance } from "fastify";
+import { helperSubmitText } from "../../helper/submitFormatter.js";
+import { log } from "../../log.js";
+import { mtproto } from "../../mtproto.js";
+import { messageStreams } from "../../streams.js";
+import { store } from "../../store.js";
+import type { FormSubmitBody, HelperSubmitBody, InlineKeyboardCallbackBody, MessageSyncBody, SendBody } from "../../types.js";
+import { authDevice } from "../authDevice.js";
+import { mtprotoErr } from "../mtprotoError.js";
+
+function sseData(event: unknown): string {
+  return `data: ${JSON.stringify(event)}\n\n`;
+}
+
+export function registerMessageRoutes(app: FastifyInstance) {
+  app.post("/messages/sync", async (req, reply) => {
+    const body = req.body as MessageSyncBody;
+    if (!body?.deviceId || !Number.isFinite(body.peerId)) return reply.code(400).send({ ok: false, error: "bad request" });
+    if (!authDevice(req, body.deviceId)) return reply.code(401).send({ ok: false, error: "unauthorized" });
+    try {
+      const since = Number.isFinite(body.sinceCursor)
+        ? body.sinceCursor!
+        : Number.isFinite(body.sinceUpdateId)
+          ? body.sinceUpdateId!
+          : 0;
+      const limit = Number.isFinite(body.limit) ? body.limit! : 50;
+      const updates = await mtproto.syncMessages(body.deviceId, body.peerId, {
+        sinceUpdateId: Number.isFinite(body.sinceUpdateId) ? body.sinceUpdateId : 0,
+        limit,
+      });
+      const messages = store.listMessageSnapshots(body.peerId, since, limit);
+      const cursor = messages.length ? messages[messages.length - 1]!.cursor + 1 : since;
+      const legacyCursor = updates.length ? updates[updates.length - 1]!.update_id + 1 : (body.sinceUpdateId ?? 0);
+      log.info(`messages sync device=${body.deviceId} peer=${body.peerId} since=${since} updates=${updates.length} messages=${messages.length}`);
+      return reply.send({ ok: true, updates, messages, cursor, legacyCursor });
+    } catch (e) {
+      return mtprotoErr(reply, e);
+    }
+  });
+
+  app.get("/messages/stream", async (req, reply) => {
+    const q = req.query as { deviceId?: string; peerId?: string; since?: string };
+    const deviceId = q.deviceId ?? "";
+    const peerId = Number(q.peerId);
+    const since = Number(q.since ?? 0);
+    if (!deviceId || !Number.isFinite(peerId)) return reply.code(400).send({ ok: false, error: "bad request" });
+    if (!authDevice(req, deviceId)) return reply.code(401).send({ ok: false, error: "unauthorized" });
+    if (!store.getAccountPeer(deviceId, peerId)) return reply.code(404).send({ ok: false, error: "peer not found" });
+
+    reply.hijack();
+    const res = reply.raw;
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      "Connection": "keep-alive",
+    });
+    const initial = store.listMessageSnapshots(peerId, since, 100, { legacyCursorFallback: false });
+    const cursor = initial.length ? initial[initial.length - 1]!.cursor + 1 : since;
+    res.write(sseData({ type: "connected", peerId, cursor }));
+    for (const message of initial) {
+      res.write(sseData({ type: "message_updated", message }));
+    }
+    const unsubscribe = messageStreams.subscribe(peerId, (event) => {
+      res.write(sseData(event));
+    });
+    const heartbeat = setInterval(() => {
+      res.write(": heartbeat\n\n");
+    }, 25000);
+    req.raw.on("close", () => {
+      clearInterval(heartbeat);
+      unsubscribe();
+    });
+  });
+
+  app.post("/send", async (req, reply) => {
+    const body = req.body as SendBody;
+    if (!body?.deviceId || !body?.peerId || !body?.text) return reply.code(400).send({ ok: false, error: "bad request" });
+    if (!authDevice(req, body.deviceId)) return reply.code(401).send({ ok: false, error: "unauthorized" });
+    try {
+      const messageId = await mtproto.sendAs(body.deviceId, body.peerId, body.text, body.replyTo);
+      return reply.send({ ok: true, messageId });
+    } catch (e) {
+      return mtprotoErr(reply, e);
+    }
+  });
+
+  app.post("/form/submit", async (req, reply) => {
+    const body = req.body as FormSubmitBody;
+    if (!body?.deviceId || !body?.peerId || !body?.formId || !body?.status || !body?.values) {
+      return reply.code(400).send({ ok: false, error: "bad request" });
+    }
+    if (!authDevice(req, body.deviceId)) return reply.code(401).send({ ok: false, error: "unauthorized" });
+    const text = [
+      "```agent_form_response",
+      JSON.stringify(
+        { formId: body.formId, taskId: body.taskId, status: body.status, values: body.values },
+        null,
+        2,
+      ),
+      "```",
+    ].join("\n");
+    try {
+      const messageId = await mtproto.sendAs(body.deviceId, body.peerId, text);
+      return reply.send({ ok: true, messageId });
+    } catch (e) {
+      return mtprotoErr(reply, e);
+    }
+  });
+
+  app.post("/helper/submit", async (req, reply) => {
+    const body = req.body as HelperSubmitBody;
+    if (!body?.deviceId || !body?.peerId || !body?.helperItemId || !body?.helperType || !body?.action) {
+      return reply.code(400).send({ ok: false, error: "bad request" });
+    }
+    if (!authDevice(req, body.deviceId)) return reply.code(401).send({ ok: false, error: "unauthorized" });
+    const source = body.source ?? {};
+    log.info(
+      `helper.submit.received device=${body.deviceId} peer=${body.peerId} helper=${body.helperItemId} type=${body.helperType} action=${body.action} source_msg=${source.messageId ?? "none"} source_text_len=${source.text?.length ?? 0} source_urls=${source.urls?.length ?? 0} recent=${source.recentMessages?.length ?? 0}`,
+    );
+    const text = helperSubmitText(body);
+    try {
+      const messageId = await mtproto.sendAs(body.deviceId, body.peerId, text);
+      log.info(
+        `helper.submit.sent device=${body.deviceId} peer=${body.peerId} tg_message_id=${messageId} helper=${body.helperItemId} action=${body.action} source_msg=${source.messageId ?? "none"}`,
+      );
+      return reply.send({ ok: true, messageId });
+    } catch (e) {
+      log.warn(
+        `helper.submit.failed device=${body.deviceId} peer=${body.peerId} helper=${body.helperItemId} action=${body.action} source_msg=${source.messageId ?? "none"} error=${(e as { message?: string })?.message ?? String(e)}`,
+      );
+      return mtprotoErr(reply, e);
+    }
+  });
+
+  app.post("/inline-keyboard/callback", async (req, reply) => {
+    const body = req.body as InlineKeyboardCallbackBody;
+    if (!body?.deviceId || !body?.peerId || !body?.messageId || !body?.buttonId) {
+      return reply.code(400).send({ ok: false, error: "bad request" });
+    }
+    if (!authDevice(req, body.deviceId)) return reply.code(401).send({ ok: false, error: "unauthorized" });
+    try {
+      const result = await mtproto.clickInlineButton(body.deviceId, body.peerId, body.messageId, body.buttonId);
+      log.info(`inline keyboard callback device=${body.deviceId} peer=${body.peerId} msg=${body.messageId} button=${body.buttonId}`);
+      return reply.send({ ok: true, result });
+    } catch (e) {
+      log.warn(
+        `inline keyboard callback failed device=${body.deviceId} peer=${body.peerId} msg=${body.messageId} button=${body.buttonId} error=${(e as { message?: string })?.message ?? String(e)}`,
+      );
+      return mtprotoErr(reply, e);
+    }
+  });
+}

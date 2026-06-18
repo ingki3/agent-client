@@ -1,0 +1,29 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+
+# Logs
+*.log
+
+# Multica agent runtime (worktree caches / agent state)
+.agent_context/
+.claude/
+.multica_worktrees/
+
+# Multica artifact dumps (raw issue/comment exports kept locally only)
+all_comments.md
+comment.txt
+sub*.json
+
+# Pencil app local backups (회귀 대비 — BIZ-230 이슈 본문 명시: "건드리지 말 것")
+# AgentClient.pen 본체는 추적, 백업 4종은 비추적
+AgentClient_v0.pen
+AgentClient-recovery.pen
+AgentClient 복사본.pen
+backup.pen
+*.pen.bak.*
