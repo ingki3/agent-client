@@ -139,14 +139,12 @@ async function receiveSnapshotSync(
   const result = await deps.relaySyncMessageSnapshots!(peerId, offset, 50);
   const inserted: Message[] = [];
 
-  deps.db.transaction(() => {
-    for (const snapshot of result.messages) {
-      if (String(snapshot.peerId) !== buddyId) continue;
-      const persisted = persistRemoteMessage(deps, snapshot);
-      if (persisted) inserted.push(persisted);
-    }
-    deps.messageSyncStateRepo.advanceCursor(buddyId, result.cursor, deps.now());
-  });
+  for (const snapshot of result.messages) {
+    if (String(snapshot.peerId) !== buddyId) continue;
+    const persisted = persistRemoteMessage(deps, snapshot);
+    if (persisted) inserted.push(persisted);
+  }
+  deps.messageSyncStateRepo.advanceCursor(buddyId, result.cursor, deps.now());
 
   return { newOffset: result.cursor, inserted: visibleInserted(deps, buddyId, inserted), typing: false };
 }
