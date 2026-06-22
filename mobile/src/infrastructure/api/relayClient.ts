@@ -14,7 +14,7 @@ import { config } from "../config";
 import { secureStore, SecureKeys } from "../storage/secureStore";
 import { uid } from "@/lib/id";
 import type { TgUpdate } from "./telegramBotApi";
-import type { FormValue, HelperItem, InlineKeyboard, LinkPreview, TtsMode } from "@/domain/entities";
+import type { FormValue, HelperItem, InlineKeyboard, LinkPreview, TtsMode } from "@/domain/entities/Message";
 
 // botToken is optional: MTProto peers register with no token (the relay's user-account
 // client receives for them — no per-bot getUpdates loop).
