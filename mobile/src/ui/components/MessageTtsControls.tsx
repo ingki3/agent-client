@@ -16,7 +16,6 @@ const DEFAULT_VOICE = 'ko-KR-InJoonNeural';
 const MODES: Array<{ mode: TtsMode; label: string }> = [
   { mode: 'brief', label: '요약' },
   { mode: 'explain', label: '대화형' },
-  { mode: 'action_items', label: '다음 액션' },
 ];
 
 function sameMessage(message: Message): boolean {
@@ -109,7 +108,8 @@ export function MessageTtsControls({ message }: { message: Message }) {
   };
 
   return (
-    <View style={{ marginTop: space[2], gap: space[1] }}>
+    <View style={{ marginTop: space[2], gap: space[2] }}>
+      {/* 듣기 메뉴 — 재생/정지 진입점 */}
       <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space[2] }}>
         <Pressable
           onPress={() => void play(tts?.mode ?? 'explain')}
@@ -130,32 +130,42 @@ export function MessageTtsControls({ message }: { message: Message }) {
             {isGenerating || busyMode ? '음성 준비 중' : isPlaying ? '중지' : '듣기'}
           </Text>
         </Pressable>
-        {MODES.map((item) => {
-          const selected = tts?.mode === item.mode;
-          return (
-            <Pressable
-              key={item.mode}
-              onPress={() => void play(item.mode)}
-              accessibilityRole="button"
-              accessibilityLabel={`${item.label} 듣기`}
-              disabled={isGenerating || busyMode !== null}
-              style={({ pressed }) => ({
-                borderRadius: radius.full,
-                borderWidth: 1,
-                borderColor: selected ? color('primary') : color('border'),
-                backgroundColor: selected ? color('trace-summary') : pressed ? color('surface-overlay') : color('surface-elevated'),
-                paddingHorizontal: space[3],
-                paddingVertical: space[2],
-                opacity: isGenerating || busyMode !== null ? 0.7 : 1,
-              })}
-            >
-              <Text style={{ color: selected ? color('on-trace-summary') : color('text-primary'), fontSize: fontSize['body-sm'], fontWeight: '600' }}>
-                {item.label}
-              </Text>
-            </Pressable>
-          );
-        })}
       </View>
+
+      {/* 듣기 방식 — 요약 / 대화형 모드 선택 (듣기 메뉴와 구분된 그룹) */}
+      <View style={{ gap: space[1] }}>
+        <Text style={{ color: color('text-secondary'), fontSize: fontSize.caption, fontWeight: '600' }}>
+          듣기 방식
+        </Text>
+        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space[2] }}>
+          {MODES.map((item) => {
+            const selected = tts?.mode === item.mode;
+            return (
+              <Pressable
+                key={item.mode}
+                onPress={() => void play(item.mode)}
+                accessibilityRole="button"
+                accessibilityLabel={`${item.label} 듣기`}
+                disabled={isGenerating || busyMode !== null}
+                style={({ pressed }) => ({
+                  borderRadius: radius.full,
+                  borderWidth: 1,
+                  borderColor: selected ? color('primary') : color('border'),
+                  backgroundColor: selected ? color('trace-summary') : pressed ? color('surface-overlay') : color('surface-elevated'),
+                  paddingHorizontal: space[3],
+                  paddingVertical: space[2],
+                  opacity: isGenerating || busyMode !== null ? 0.7 : 1,
+                })}
+              >
+                <Text style={{ color: selected ? color('on-trace-summary') : color('text-primary'), fontSize: fontSize['body-sm'], fontWeight: '600' }}>
+                  {item.label}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </View>
+      </View>
+
       {tts?.status === 'failed' && tts.error ? (
         <Text style={{ color: color('error'), fontSize: fontSize.caption }}>{tts.error}</Text>
       ) : null}

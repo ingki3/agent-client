@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Stack, useRouter, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
@@ -8,6 +8,7 @@ import '@/i18n';
 import { useAuthStore } from '@/application/stores/auth';
 import { useNotificationsStore } from '@/application/stores/notifications';
 import { loadRuntimeConfig } from '@/infrastructure/config';
+import { type NotifData, pushClient } from '@/infrastructure/notifications/pushClient';
 import { computeProtectedRoute } from '@/ui/navigation/protected-route';
 import { ThemeProvider, useTheme } from '@/ui/theme/ThemeProvider';
 
@@ -45,6 +46,8 @@ export default function RootLayout() {
   const bootstrap = useAuthStore((s) => s.bootstrap);
   const authStatus = useAuthStore((s) => s.status);
   const [runtimeReady, setRuntimeReady] = useState(false);
+  const router = useRouter();
+  const coldStartHandled = useRef(false);
 
   useEffect(() => {
     void (async () => {
@@ -61,6 +64,27 @@ export default function RootLayout() {
       setRuntimeReady(true);
     });
   }, [bootstrap]);
+
+  // Push tap → land in the corresponding chat room. Without this, tapping a push
+  // just cold-starts the app at the default landing (/(main)/buddies), so the
+  // user ends up somewhere other than the conversation the push was about.
+  useEffect(() => {
+    if (!runtimeReady || authStatus !== 'auth') return;
+
+    const openChatFromPush = (data: NotifData | null) => {
+      const target = data?.buddyId ?? (data?.chatId != null ? String(data.chatId) : null);
+      if (target) router.push(`/chat/${target}`);
+    };
+
+    // Cold start: the tap that launched the app (consume once per session).
+    if (!coldStartHandled.current) {
+      coldStartHandled.current = true;
+      void pushClient.getLastResponseData().then(openChatFromPush).catch(() => undefined);
+    }
+
+    // Warm: a tap while the app is already running.
+    return pushClient.addResponseListener(openChatFromPush);
+  }, [runtimeReady, authStatus, router]);
 
   useEffect(() => {
     if (!runtimeReady || authStatus !== 'auth') return;
