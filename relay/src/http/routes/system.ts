@@ -4,20 +4,20 @@ import { log } from "../../log.js";
 import { loopCount, reconcileLoops } from "../../poller.js";
 import { store } from "../../store.js";
 import type { RegisterBody } from "../../types.js";
-import { authDevice } from "../authDevice.js";
+import { replyError, requireDeviceAuth } from "../guards.js";
 
 export function registerSystemRoutes(app: FastifyInstance) {
   app.post("/register", async (req, reply) => {
     const body = req.body as RegisterBody;
     if (!body?.deviceId || !body?.gateway || !Array.isArray(body?.bots)) {
-      return reply.code(400).send({ ok: false, error: "bad request" });
+      return replyError(reply, 400, "bad request");
     }
 
     const existing = store.getDevice(body.deviceId);
     let secret: string | undefined;
     let secretHash: string;
     if (existing) {
-      if (!authDevice(req, body.deviceId)) return reply.code(401).send({ ok: false, error: "unauthorized" });
+      if (!requireDeviceAuth(req, body.deviceId, reply)) return;
       secretHash = existing.device_secret_hash;
     } else {
       secret = newSecret();
@@ -48,8 +48,8 @@ export function registerSystemRoutes(app: FastifyInstance) {
 
   app.post("/unregister", async (req, reply) => {
     const body = req.body as { deviceId: string; botId?: number };
-    if (!body?.deviceId) return reply.code(400).send({ ok: false, error: "bad request" });
-    if (!authDevice(req, body.deviceId)) return reply.code(401).send({ ok: false, error: "unauthorized" });
+    if (!body?.deviceId) return replyError(reply, 400, "bad request");
+    if (!requireDeviceAuth(req, body.deviceId, reply)) return;
 
     if (body.botId == null) store.removeDevice(body.deviceId);
     else store.unsubscribe(body.deviceId, body.botId);
@@ -64,8 +64,8 @@ export function registerSystemRoutes(app: FastifyInstance) {
     const deviceId = q.deviceId ?? "";
     const botId = Number(q.botId);
     const since = Number(q.since ?? 0);
-    if (!deviceId || !Number.isFinite(botId)) return reply.code(400).send({ ok: false, error: "bad request" });
-    if (!authDevice(req, deviceId)) return reply.code(401).send({ ok: false, error: "unauthorized" });
+    if (!deviceId || !Number.isFinite(botId)) return replyError(reply, 400, "bad request");
+    if (!requireDeviceAuth(req, deviceId, reply)) return;
     if (!store.subscriptionBuddy(deviceId, botId)) return reply.code(403).send({ ok: false, error: "not subscribed" });
 
     const updates = store.pullUpdates(botId, since);

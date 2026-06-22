@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { log } from "../../log.js";
 import { mtproto } from "../../mtproto.js";
-import { authDevice } from "../authDevice.js";
+import { replyError, requireDeviceAuth } from "../guards.js";
 import { mtprotoErr } from "../mtprotoError.js";
 
 function describeMedia(kind?: string, fileName?: string, mime?: string, byteLength?: number): string {
@@ -20,9 +20,9 @@ export function registerMediaRoutes(app: FastifyInstance) {
       dataBase64?: string;
     };
     if (!body?.deviceId || !body?.peerId || !body?.dataBase64) {
-      return reply.code(400).send({ ok: false, error: "bad request" });
+      return replyError(reply, 400, "bad request");
     }
-    if (!authDevice(req, body.deviceId)) return reply.code(401).send({ ok: false, error: "unauthorized" });
+    if (!requireDeviceAuth(req, body.deviceId, reply)) return;
     try {
       const buffer = Buffer.from(body.dataBase64, "base64");
       log.info(`/sendMedia start device=${body.deviceId} peer=${body.peerId} ${describeMedia(body.kind, body.fileName, body.mime, buffer.length)} caption=${body.caption ? "yes" : "no"}`);
@@ -49,9 +49,9 @@ export function registerMediaRoutes(app: FastifyInstance) {
       files?: { kind?: string; fileName?: string; mime?: string; dataBase64?: string }[];
     };
     if (!body?.deviceId || !body?.peerId || !Array.isArray(body.files) || body.files.length === 0) {
-      return reply.code(400).send({ ok: false, error: "bad request" });
+      return replyError(reply, 400, "bad request");
     }
-    if (!authDevice(req, body.deviceId)) return reply.code(401).send({ ok: false, error: "unauthorized" });
+    if (!requireDeviceAuth(req, body.deviceId, reply)) return;
     try {
       const items = body.files
         .filter((f) => f.dataBase64)
@@ -62,7 +62,7 @@ export function registerMediaRoutes(app: FastifyInstance) {
           kind: f.kind || "document",
         }));
       if (items.length === 0) {
-        return reply.code(400).send({ ok: false, error: "bad request" });
+        return replyError(reply, 400, "bad request");
       }
       log.info(`/sendMediaGroup start device=${body.deviceId} peer=${body.peerId} count=${items.length} caption=${body.caption ? "yes" : "no"} ${items.map((item) => describeMedia(item.kind, item.fileName, item.mime, item.buffer.length)).join("; ")}`);
       const messageId = await mtproto.sendMediaGroupAs(body.deviceId, body.peerId, items, body.caption);
@@ -80,18 +80,22 @@ export function registerMediaRoutes(app: FastifyInstance) {
     const peer = Number(q.peer);
     const msg = Number(q.msg);
     if (!deviceId || !Number.isFinite(peer) || !Number.isFinite(msg)) {
-      return reply.code(400).send({ ok: false, error: "bad request" });
+      return replyError(reply, 400, "bad request");
     }
+    // NOTE: no Bearer auth here on purpose — this URL is consumed directly as an
+    // <Image>/<Video> source in the app, which cannot send an Authorization
+    // header. Properly closing this requires a signed query-string token
+    // (tracked separately); a Bearer guard here would break media rendering.
     try {
       const res = await mtproto.downloadMessageMedia(deviceId, peer, msg);
-      if (!res) return reply.code(404).send({ ok: false, error: "no media" });
+      if (!res) return replyError(reply, 404, "no media");
       return reply
         .header("Content-Type", res.mime || "application/octet-stream")
         .header("Cache-Control", "public, max-age=86400")
         .send(res.buffer);
     } catch (e) {
       log.warn(`/media failed: ${String(e)}`);
-      return reply.code(500).send({ ok: false, error: "media" });
+      return replyError(reply, 500, "media");
     }
   });
 }
