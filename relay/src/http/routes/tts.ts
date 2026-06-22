@@ -5,7 +5,7 @@ import { waitForHelperIdle } from "../../helper/scheduler.js";
 import { log } from "../../log.js";
 import { createTtsAudio, createTtsScript, resolveTtsFile } from "../../tts.js";
 import type { TtsBody, TtsMode } from "../../types.js";
-import { authDevice } from "../authDevice.js";
+import { replyError, requireDeviceAuth } from "../guards.js";
 
 function normalizeTtsMode(mode: unknown): TtsMode {
   return mode === "brief" || mode === "action_items" || mode === "explain" ? mode : "brief";
@@ -14,8 +14,8 @@ function normalizeTtsMode(mode: unknown): TtsMode {
 export function registerTtsRoutes(app: FastifyInstance) {
   app.post("/tts/script", async (req, reply) => {
     const body = req.body as TtsBody;
-    if (!body?.deviceId || !body?.text) return reply.code(400).send({ ok: false, error: "bad request" });
-    if (!authDevice(req, body.deviceId)) return reply.code(401).send({ ok: false, error: "unauthorized" });
+    if (!body?.deviceId || !body?.text) return replyError(reply, 400, "bad request");
+    if (!requireDeviceAuth(req, body.deviceId, reply)) return;
     try {
       const mode = normalizeTtsMode(body.mode);
       const waited = await waitForHelperIdle();
@@ -35,8 +35,8 @@ export function registerTtsRoutes(app: FastifyInstance) {
 
   app.post("/tts/audio", async (req, reply) => {
     const body = req.body as TtsBody;
-    if (!body?.deviceId || !body?.text) return reply.code(400).send({ ok: false, error: "bad request" });
-    if (!authDevice(req, body.deviceId)) return reply.code(401).send({ ok: false, error: "unauthorized" });
+    if (!body?.deviceId || !body?.text) return replyError(reply, 400, "bad request");
+    if (!requireDeviceAuth(req, body.deviceId, reply)) return;
     try {
       const mode = normalizeTtsMode(body.mode);
       const waited = await waitForHelperIdle();
@@ -66,7 +66,7 @@ export function registerTtsRoutes(app: FastifyInstance) {
   app.get("/tts/audio/:cacheKey", async (req, reply) => {
     const params = req.params as { cacheKey?: string };
     const filePath = params.cacheKey ? resolveTtsFile(params.cacheKey) : null;
-    if (!filePath) return reply.code(400).send({ ok: false, error: "bad request" });
+    if (!filePath) return replyError(reply, 400, "bad request");
     try {
       await stat(filePath);
       return reply

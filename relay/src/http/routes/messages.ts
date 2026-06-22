@@ -5,7 +5,7 @@ import { mtproto } from "../../mtproto.js";
 import { messageStreams } from "../../streams.js";
 import { store } from "../../store.js";
 import type { FormSubmitBody, HelperSubmitBody, InlineKeyboardCallbackBody, MessageSyncBody, SendBody } from "../../types.js";
-import { authDevice } from "../authDevice.js";
+import { replyError, requireDeviceAuth } from "../guards.js";
 import { mtprotoErr } from "../mtprotoError.js";
 
 function sseData(event: unknown): string {
@@ -15,8 +15,8 @@ function sseData(event: unknown): string {
 export function registerMessageRoutes(app: FastifyInstance) {
   app.post("/messages/sync", async (req, reply) => {
     const body = req.body as MessageSyncBody;
-    if (!body?.deviceId || !Number.isFinite(body.peerId)) return reply.code(400).send({ ok: false, error: "bad request" });
-    if (!authDevice(req, body.deviceId)) return reply.code(401).send({ ok: false, error: "unauthorized" });
+    if (!body?.deviceId || !Number.isFinite(body.peerId)) return replyError(reply, 400, "bad request");
+    if (!requireDeviceAuth(req, body.deviceId, reply)) return;
     try {
       const since = Number.isFinite(body.sinceCursor)
         ? body.sinceCursor!
@@ -43,8 +43,8 @@ export function registerMessageRoutes(app: FastifyInstance) {
     const deviceId = q.deviceId ?? "";
     const peerId = Number(q.peerId);
     const since = Number(q.since ?? 0);
-    if (!deviceId || !Number.isFinite(peerId)) return reply.code(400).send({ ok: false, error: "bad request" });
-    if (!authDevice(req, deviceId)) return reply.code(401).send({ ok: false, error: "unauthorized" });
+    if (!deviceId || !Number.isFinite(peerId)) return replyError(reply, 400, "bad request");
+    if (!requireDeviceAuth(req, deviceId, reply)) return;
     if (!store.getAccountPeer(deviceId, peerId)) return reply.code(404).send({ ok: false, error: "peer not found" });
 
     reply.hijack();
@@ -74,8 +74,8 @@ export function registerMessageRoutes(app: FastifyInstance) {
 
   app.post("/send", async (req, reply) => {
     const body = req.body as SendBody;
-    if (!body?.deviceId || !body?.peerId || !body?.text) return reply.code(400).send({ ok: false, error: "bad request" });
-    if (!authDevice(req, body.deviceId)) return reply.code(401).send({ ok: false, error: "unauthorized" });
+    if (!body?.deviceId || !body?.peerId || !body?.text) return replyError(reply, 400, "bad request");
+    if (!requireDeviceAuth(req, body.deviceId, reply)) return;
     try {
       const messageId = await mtproto.sendAs(body.deviceId, body.peerId, body.text, body.replyTo);
       return reply.send({ ok: true, messageId });
@@ -87,9 +87,9 @@ export function registerMessageRoutes(app: FastifyInstance) {
   app.post("/form/submit", async (req, reply) => {
     const body = req.body as FormSubmitBody;
     if (!body?.deviceId || !body?.peerId || !body?.formId || !body?.status || !body?.values) {
-      return reply.code(400).send({ ok: false, error: "bad request" });
+      return replyError(reply, 400, "bad request");
     }
-    if (!authDevice(req, body.deviceId)) return reply.code(401).send({ ok: false, error: "unauthorized" });
+    if (!requireDeviceAuth(req, body.deviceId, reply)) return;
     const text = [
       "```agent_form_response",
       JSON.stringify(
@@ -110,9 +110,9 @@ export function registerMessageRoutes(app: FastifyInstance) {
   app.post("/helper/submit", async (req, reply) => {
     const body = req.body as HelperSubmitBody;
     if (!body?.deviceId || !body?.peerId || !body?.helperItemId || !body?.helperType || !body?.action) {
-      return reply.code(400).send({ ok: false, error: "bad request" });
+      return replyError(reply, 400, "bad request");
     }
-    if (!authDevice(req, body.deviceId)) return reply.code(401).send({ ok: false, error: "unauthorized" });
+    if (!requireDeviceAuth(req, body.deviceId, reply)) return;
     const source = body.source ?? {};
     log.info(
       `helper.submit.received device=${body.deviceId} peer=${body.peerId} helper=${body.helperItemId} type=${body.helperType} action=${body.action} source_msg=${source.messageId ?? "none"} source_text_len=${source.text?.length ?? 0} source_urls=${source.urls?.length ?? 0} recent=${source.recentMessages?.length ?? 0}`,
@@ -135,9 +135,9 @@ export function registerMessageRoutes(app: FastifyInstance) {
   app.post("/inline-keyboard/callback", async (req, reply) => {
     const body = req.body as InlineKeyboardCallbackBody;
     if (!body?.deviceId || !body?.peerId || !body?.messageId || !body?.buttonId) {
-      return reply.code(400).send({ ok: false, error: "bad request" });
+      return replyError(reply, 400, "bad request");
     }
-    if (!authDevice(req, body.deviceId)) return reply.code(401).send({ ok: false, error: "unauthorized" });
+    if (!requireDeviceAuth(req, body.deviceId, reply)) return;
     try {
       const result = await mtproto.clickInlineButton(body.deviceId, body.peerId, body.messageId, body.buttonId);
       log.info(`inline keyboard callback device=${body.deviceId} peer=${body.peerId} msg=${body.messageId} button=${body.buttonId}`);

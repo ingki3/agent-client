@@ -1,13 +1,13 @@
 import type { FastifyInstance } from "fastify";
 import { log } from "../../log.js";
 import { fetchLinkPreview } from "../../services/linkPreview.js";
-import { authDevice } from "../authDevice.js";
+import { replyError, requireDeviceAuth } from "../guards.js";
 
 export function registerLinkPreviewRoutes(app: FastifyInstance) {
   app.post("/link/preview", async (req, reply) => {
     const body = req.body as { deviceId?: string; url?: string };
-    if (!body?.deviceId || !body?.url) return reply.code(400).send({ ok: false, error: "bad request" });
-    if (!authDevice(req, body.deviceId)) return reply.code(401).send({ ok: false, error: "unauthorized" });
+    if (!body?.deviceId || !body?.url) return replyError(reply, 400, "bad request");
+    if (!requireDeviceAuth(req, body.deviceId, reply)) return;
     try {
       const preview = await fetchLinkPreview(body.url);
       return reply.send({ ok: true, preview });

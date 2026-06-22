@@ -32,6 +32,13 @@ import type { TgUpdate } from "./types.js";
 type Pending = { client: TelegramClient; phoneCodeHash: string; phone: string };
 
 const clients = new Map<string, TelegramClient>(); // signed-in, live (deviceId → client)
+
+/** Resolve a signed-in client or throw the canonical "not signed in" error. */
+function ensureClient(deviceId: string): TelegramClient {
+  const client = clients.get(deviceId);
+  if (!client) throw new Error("not signed in");
+  return client;
+}
 const pending = new Map<string, Pending>(); // mid-login (deviceId → connected client)
 
 /** Attach the incoming-message receiver that buffers replies into `updates` + pushes. */
@@ -125,8 +132,7 @@ export const mtproto = {
     messageId: number,
     buttonId: string,
   ): Promise<{ message?: string; alert?: boolean; url?: string }> {
-    const client = clients.get(deviceId);
-    if (!client) throw new Error("not signed in");
+    const client = ensureClient(deviceId);
     const match = /^r(\d+)c(\d+)$/.exec(buttonId);
     if (!match) throw new Error("bad button id");
     const row = Number(match[1]);
@@ -179,8 +185,7 @@ export const mtproto = {
     deviceId: string,
     username: string,
   ): Promise<{ peerId: number; username: string; title: string }> {
-    const client = clients.get(deviceId);
-    if (!client) throw new Error("not signed in");
+    const client = ensureClient(deviceId);
     const handle = username.replace(/^@/, "");
     const ent = (await client.getEntity(handle)) as {
       id: unknown;
@@ -203,8 +208,7 @@ export const mtproto = {
 
   /** Send `text` to `peerId` as the user. Returns the sent message id. */
   async sendAs(deviceId: string, peerId: number, text: string, replyTo?: number): Promise<number> {
-    const client = clients.get(deviceId);
-    if (!client) throw new Error("not signed in");
+    const client = ensureClient(deviceId);
     const peer = store.getAccountPeer(deviceId, peerId);
     const target: string | number = peer?.username ? peer.username : peerId;
     const opts = replyTo ? { message: text, replyTo } : { message: text };
@@ -227,8 +231,7 @@ export const mtproto = {
     peerId: number,
     opts: { buffer: Buffer; fileName: string; mime: string; kind: string; caption?: string },
   ): Promise<number> {
-    const client = clients.get(deviceId);
-    if (!client) throw new Error("not signed in");
+    const client = ensureClient(deviceId);
     const peer = store.getAccountPeer(deviceId, peerId);
     const target: string | number = peer?.username ? peer.username : peerId;
     const mime = opts.mime || "application/octet-stream";
@@ -264,8 +267,7 @@ export const mtproto = {
     items: { buffer: Buffer; fileName: string; mime: string; kind: string }[],
     caption?: string,
   ): Promise<number> {
-    const client = clients.get(deviceId);
-    if (!client) throw new Error("not signed in");
+    const client = ensureClient(deviceId);
     const peer = store.getAccountPeer(deviceId, peerId);
     const target: string | number = peer?.username ? peer.username : peerId;
     const normalized = items.map((item) => {
@@ -325,8 +327,7 @@ export const mtproto = {
     peerId: number,
     opts: { sinceUpdateId?: number; limit?: number } = {},
   ): Promise<TgUpdate[]> {
-    const client = clients.get(deviceId);
-    if (!client) throw new Error("not signed in");
+    const client = ensureClient(deviceId);
     const peer = store.getAccountPeer(deviceId, peerId);
     if (!peer) throw new Error("peer not found");
     const target: string | number = peer.username ? peer.username : peerId;
