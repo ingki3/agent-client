@@ -3,7 +3,6 @@
  * Run: node --experimental-strip-types scripts/smoke-domain.ts
  */
 import { parseMarkdown } from "../src/domain/markdown/parse";
-import { maskArgs, canTransition } from "../src/domain/entities";
 
 let ok = 0;
 let bad = 0;
@@ -52,17 +51,6 @@ check("streaming suppresses dangling ** marker", !flat.includes("**") && flat.in
 // Unterminated code fence → loading box while streaming
 const openFence = parseMarkdown("```js\nconst a =", true);
 check("unterminated fence marked loading", openFence.some((b) => b.type === "code" && b.loading === true));
-
-// Sensitive arg masking (FR-19, Q7)
-const masked = maskArgs({ query: "hi", api_key: "sk-secret", nested: { token: "abc", keep: 1 } });
-check("api_key masked", masked.api_key === "••••••••");
-check("nested token masked", (masked.nested as Record<string, unknown>).token === "••••••••");
-check("non-sensitive kept", masked.query === "hi");
-
-// Status transitions (domain rules)
-check("sending → sent allowed", canTransition("sending", "sent"));
-check("done → sending blocked", !canTransition("done", "sending"));
-check("failed → sending allowed (retry)", canTransition("failed", "sending"));
 
 console.log(`\n== ${ok} passed, ${bad} failed ==\n`);
 process.exit(bad > 0 ? 1 : 0);

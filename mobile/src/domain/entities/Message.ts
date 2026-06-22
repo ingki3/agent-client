@@ -61,6 +61,8 @@ export type HelperItem =
   | { type: 'artifact_suggestion'; id: string; title: string; artifact: { kind: string; title: string; content: string; language?: string } }
   | { type: string; id: string; title?: string; [key: string]: unknown };
 
+export type AttachmentKind = 'image' | 'video' | 'voice' | 'audio' | 'document';
+
 export type Attachment = {
   kind: string;
   uri: string;

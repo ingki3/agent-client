@@ -8,7 +8,7 @@ import * as ImagePicker from "expo-image-picker";
 import * as Location from "expo-location";
 import * as FileSystem from "expo-file-system/legacy";
 import { Audio } from "expo-av";
-import type { AttachmentKind } from "@/domain/entities";
+import type { AttachmentKind } from "@/domain/entities/Message";
 
 export type PickedAttachment = {
   kind: AttachmentKind;
