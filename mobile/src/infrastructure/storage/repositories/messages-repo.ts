@@ -5,6 +5,7 @@ import type {
   MessageStatus,
   ServerMessageId,
 } from '@/domain/entities/Message';
+import { deepStableEqual } from '@/domain/objects/stableComparison';
 
 import type { Database } from '../database';
 
@@ -56,21 +57,6 @@ function parseJson<T>(value: string | null): T | undefined {
 
 function stringifyJson(value: unknown): string | null {
   return value == null ? null : JSON.stringify(value);
-}
-
-function stableValue(value: unknown): unknown {
-  if (value === undefined) return null;
-  if (value === null || typeof value !== 'object') return value;
-  if (Array.isArray(value)) return value.map(stableValue);
-  return Object.fromEntries(
-    Object.entries(value as Record<string, unknown>)
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([key, entry]) => [key, stableValue(entry)]),
-  );
-}
-
-function sameJson(a: unknown, b: unknown): boolean {
-  return JSON.stringify(stableValue(a)) === JSON.stringify(stableValue(b));
 }
 
 export class MessagesRepository {
@@ -143,19 +129,19 @@ export class MessagesRepository {
       next.text = fields.text;
       changed = true;
     }
-    if (fields.preview && !sameJson(fields.preview, existing.preview)) {
+    if (fields.preview && !deepStableEqual(fields.preview, existing.preview)) {
       next.preview = fields.preview;
       changed = true;
     }
-    if (fields.helperItems && !sameJson(fields.helperItems, existing.helperItems)) {
+    if (fields.helperItems && !deepStableEqual(fields.helperItems, existing.helperItems)) {
       next.helperItems = fields.helperItems;
       changed = true;
     }
-    if (fields.inlineKeyboard !== undefined && !sameJson(fields.inlineKeyboard, existing.inlineKeyboard)) {
+    if (fields.inlineKeyboard !== undefined && !deepStableEqual(fields.inlineKeyboard, existing.inlineKeyboard)) {
       next.inlineKeyboard = fields.inlineKeyboard;
       changed = true;
     }
-    if (fields.attachments && !sameJson(fields.attachments, existing.attachments)) {
+    if (fields.attachments && !deepStableEqual(fields.attachments, existing.attachments)) {
       next.attachments = fields.attachments;
       changed = true;
     }

@@ -6,6 +6,7 @@ import Database from "better-sqlite3";
 import { config } from "./config.js";
 import { encrypt, decrypt } from "./crypto.js";
 import type { HelperItem, NormalizedMessage, TgUpdate } from "./types.js";
+import { sameJson } from "./util/stableJson.js";
 
 const db = new Database(config.dbPath);
 db.pragma("journal_mode = WAL");
@@ -117,21 +118,6 @@ export type PeerRow = {
   last_used_at: number;
   local_seq: number;
 };
-
-function stableValue(value: unknown): unknown {
-  if (value === undefined) return null;
-  if (value === null || typeof value !== "object") return value;
-  if (Array.isArray(value)) return value.map(stableValue);
-  return Object.fromEntries(
-    Object.entries(value as Record<string, unknown>)
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([key, entry]) => [key, stableValue(entry)]),
-  );
-}
-
-function sameJson(a: unknown, b: unknown): boolean {
-  return JSON.stringify(stableValue(a)) === JSON.stringify(stableValue(b));
-}
 
 function nextSnapshotCursor(peerId: number): number {
   const row = db
