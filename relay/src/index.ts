@@ -11,6 +11,28 @@ import { log } from "./log.js";
 import { mtproto } from "./mtproto.js";
 import { loopCount, reconcileLoops } from "./poller.js";
 
+// Crash safety net: a transient MTProto/network rejection must never take the
+// whole relay down. Log and keep running instead of letting Node exit.
+process.on("unhandledRejection", (reason) => {
+  log.error(`unhandledRejection: ${reason instanceof Error ? reason.stack ?? reason.message : String(reason)}`);
+});
+process.on("uncaughtException", (err) => {
+  log.error(`uncaughtException: ${err.stack ?? err.message}`);
+});
+
+/** Run a periodic task without ever letting it throw out of the timer. */
+function safeInterval(fn: () => void | Promise<void>, ms: number, label: string): void {
+  setInterval(() => {
+    void (async () => {
+      try {
+        await fn();
+      } catch (e) {
+        log.error(`interval ${label} failed: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    })();
+  }, ms);
+}
+
 const app = createRelayApp();
 
 registerSystemRoutes(app);
@@ -26,10 +48,14 @@ async function main() {
     log.warn("RELAY_MASTER_KEY not set — using DEV key. DO NOT use real bot tokens in this mode.");
   }
   reconcileLoops();
-  setInterval(reconcileLoops, 60_000);
+  safeInterval(reconcileLoops, 60_000, "reconcileLoops");
   if (config.mtprotoEnabled) {
-    await mtproto.reconnectAll();
-    setInterval(() => void mtproto.reconnectAll(), 60_000);
+    try {
+      await mtproto.reconnectAll();
+    } catch (e) {
+      log.error(`initial mtproto.reconnectAll failed (continuing): ${e instanceof Error ? e.message : String(e)}`);
+    }
+    safeInterval(() => mtproto.reconnectAll(), 60_000, "mtproto.reconnectAll");
     log.info("mtproto enabled (user-account path active)");
   } else {
     log.warn("TELEGRAM_API_ID/HASH not set — MTProto (user-account) path disabled.");

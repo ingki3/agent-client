@@ -87,6 +87,7 @@ function runLoop(bot: BotRow) {
   loops.set(bot.bot_id, loop);
 
   void (async () => {
+   try {
     const token = store.decryptToken(bot);
     const title = await botTitle(bot.gateway, token);
     let offset = bot.tg_offset;
@@ -130,6 +131,11 @@ function runLoop(bot: BotRow) {
       }
     }
     log.info(`loop stop bot=${bot.bot_id}`);
+   } catch (e) {
+    log.error(`loop crashed bot=${bot.bot_id}: ${e instanceof Error ? e.message : String(e)}`);
+   } finally {
+    loops.delete(bot.bot_id);
+   }
   })();
 }
 
