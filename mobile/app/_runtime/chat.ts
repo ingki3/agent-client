@@ -404,9 +404,14 @@ function startRelayStream(buddyId: BuddyId, sinceCursor: number): void {
   pendingStreams.add(buddyId);
   void relayClient.openMessageStream(peerId, sinceCursor, (event) => {
     if (event.type !== 'message_updated' && event.type !== 'helper_updated') return;
-    if (event.message.role !== 'agent') return;
+    // Persist + surface BOTH directions: agent replies and the user's own
+    // messages sent from another Telegram client (role === 'user'). The old
+    // agent-only guard dropped those, so cross-client messages never appeared
+    // live and the advancing cursor then skipped them on the next poll too.
+    // persistRemoteMessage de-dupes by server id, so our own local echo is not
+    // re-appended.
     const persisted = persistRemoteMessage(deps, event.message);
-    if (!persisted || persisted.role !== 'agent') return;
+    if (!persisted) return;
     useChatStore.getState().appendMessage(persisted);
     bootedOffsets[buddyId] = Math.max(bootedOffsets[buddyId] ?? sinceCursor, event.message.cursor);
     markBuddyRead(buddyId);
