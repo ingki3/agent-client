@@ -10,21 +10,7 @@ import type {
 } from '@/domain/entities/Message';
 import { isLikelyDuplicateMessage } from '@/domain/messages/duplicateMessages';
 import { isHiddenHelperSubmitMessage } from '@/domain/messages/hiddenMessages';
-
-function stableValue(value: unknown): unknown {
-  if (value === undefined) return null;
-  if (value === null || typeof value !== 'object') return value;
-  if (Array.isArray(value)) return value.map(stableValue);
-  return Object.fromEntries(
-    Object.entries(value as Record<string, unknown>)
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([key, entry]) => [key, stableValue(entry)]),
-  );
-}
-
-function sameMessage(a: Message, b: Message): boolean {
-  return JSON.stringify(stableValue(a)) === JSON.stringify(stableValue(b));
-}
+import { deepStableEqual } from '@/domain/objects/stableComparison';
 
 interface ChatState {
   /** buddyId -> ordered clientMessageId 배열. 화면 키는 clientMessageId (TECH §12.3). */
@@ -65,7 +51,7 @@ export const useChatStore = create<ChatState>((set) => ({
       if (duplicateClientId) return s;
       if (list.includes(msg.clientMessageId)) {
         const existing = s.messages[msg.clientMessageId];
-        if (existing && sameMessage(existing, msg)) return s;
+        if (existing && deepStableEqual(existing, msg)) return s;
         return { messages: { ...s.messages, [msg.clientMessageId]: msg } };
       }
       return {
