@@ -164,88 +164,18 @@ export async function sendMessageFlow(
   return outcome;
 }
 
-export async function sendAttachmentFlow(
-  buddyId: BuddyId,
-  attachment: PickedAttachment,
-  caption = '',
-): Promise<Message> {
-  const deps = getDeps();
-  const createdAt = deps.now();
-  const clientMessageId = `local-media-${createdAt}-${Math.random().toString(36).slice(2, 8)}`;
-  const text = caption.trim();
-  const message: Message = {
-    id: null,
-    clientMessageId,
-    buddyId,
-    role: 'user',
-    text,
-    status: useNetworkStore.getState().isOnline ? 'sending' : 'failed',
-    createdAt,
-    traceId: null,
-    attachments: [{
-      kind: attachment.kind,
-      uri: attachment.uri,
-      name: attachment.name,
-      mime: attachment.mime,
-      ...(attachment.size !== undefined ? { size: attachment.size } : {}),
-    }],
-  };
-
-  deps.db.transaction(() => {
-    deps.messagesRepo.insert(message);
-  });
-  useChatStore.getState().appendMessage(message);
-
-  const peerId = Number(buddyId);
-  if (!useNetworkStore.getState().isOnline || !Number.isFinite(peerId)) {
-    useChatStore.getState().setStatus(clientMessageId, 'failed');
-    return { ...message, status: 'failed' };
-  }
-
-  try {
-    const dataBase64 = await readBase64(attachment.uri, attachment.name);
-    const payload = {
-      kind: attachment.kind,
-      fileName: attachment.name,
-      mime: attachment.mime,
-      dataBase64,
-    };
-    const messageId = await relayClient.sendMedia(peerId, text ? { ...payload, caption: text } : payload);
-    deps.db.transaction(() => {
-      deps.messagesRepo.updateServerId(clientMessageId, String(messageId));
-      deps.messagesRepo.updateStatus(clientMessageId, 'sent');
-    });
-    useChatStore.getState().setServerId(clientMessageId, String(messageId));
-    useChatStore.getState().setStatus(clientMessageId, 'sent');
-    return { ...message, id: String(messageId), status: 'sent' };
-  } catch (err) {
-    console.warn('[chat] sendAttachmentFlow failed', {
-      buddyId,
-      name: attachment.name,
-      mime: attachment.mime,
-      uriScheme: attachment.uri.split(':')[0],
-      error: err instanceof Error ? err.message : String(err),
-    });
-    deps.db.transaction(() => {
-      deps.messagesRepo.updateStatus(clientMessageId, 'failed');
-    });
-    useChatStore.getState().setStatus(clientMessageId, 'failed');
-    return { ...message, status: 'failed' };
-  }
-}
-
-export async function sendAttachmentGroupFlow(
+/**
+ * Shared attachment-send lifecycle: optimistic local message (insert + append),
+ * offline short-circuit, then the relay send + status reconciliation. The only
+ * thing that differs between a single attachment and a group is the relay call,
+ * which the caller supplies as `send`.
+ */
+async function sendAttachmentsCommon(
   buddyId: BuddyId,
   attachments: PickedAttachment[],
-  caption = '',
+  caption: string,
+  send: (peerId: number, caption: string) => Promise<number>,
 ): Promise<Message> {
-  if (attachments.length === 0) {
-    throw new Error('sendAttachmentGroupFlow: empty attachments are not allowed');
-  }
-  if (attachments.length === 1) {
-    return sendAttachmentFlow(buddyId, attachments[0]!, caption);
-  }
-
   const deps = getDeps();
   const createdAt = deps.now();
   const clientMessageId = `local-media-${createdAt}-${Math.random().toString(36).slice(2, 8)}`;
@@ -280,15 +210,7 @@ export async function sendAttachmentGroupFlow(
   }
 
   try {
-    const files = await Promise.all(
-      attachments.map(async (attachment) => ({
-        kind: attachment.kind,
-        fileName: attachment.name,
-        mime: attachment.mime,
-        dataBase64: await readBase64(attachment.uri, attachment.name),
-      })),
-    );
-    const messageId = await relayClient.sendMediaGroup(peerId, files, text || undefined);
+    const messageId = await send(peerId, text);
     deps.db.transaction(() => {
       deps.messagesRepo.updateServerId(clientMessageId, String(messageId));
       deps.messagesRepo.updateStatus(clientMessageId, 'sent');
@@ -297,7 +219,7 @@ export async function sendAttachmentGroupFlow(
     useChatStore.getState().setStatus(clientMessageId, 'sent');
     return { ...message, id: String(messageId), status: 'sent' };
   } catch (err) {
-    console.warn('[chat] sendAttachmentGroupFlow failed', {
+    console.warn('[chat] sendAttachments failed', {
       buddyId,
       count: attachments.length,
       error: err instanceof Error ? err.message : String(err),
@@ -308,6 +230,48 @@ export async function sendAttachmentGroupFlow(
     useChatStore.getState().setStatus(clientMessageId, 'failed');
     return { ...message, status: 'failed' };
   }
+}
+
+export async function sendAttachmentFlow(
+  buddyId: BuddyId,
+  attachment: PickedAttachment,
+  caption = '',
+): Promise<Message> {
+  return sendAttachmentsCommon(buddyId, [attachment], caption, async (peerId, text) => {
+    const dataBase64 = await readBase64(attachment.uri, attachment.name);
+    const payload = {
+      kind: attachment.kind,
+      fileName: attachment.name,
+      mime: attachment.mime,
+      dataBase64,
+    };
+    return relayClient.sendMedia(peerId, text ? { ...payload, caption: text } : payload);
+  });
+}
+
+export async function sendAttachmentGroupFlow(
+  buddyId: BuddyId,
+  attachments: PickedAttachment[],
+  caption = '',
+): Promise<Message> {
+  if (attachments.length === 0) {
+    throw new Error('sendAttachmentGroupFlow: empty attachments are not allowed');
+  }
+  if (attachments.length === 1) {
+    return sendAttachmentFlow(buddyId, attachments[0]!, caption);
+  }
+
+  return sendAttachmentsCommon(buddyId, attachments, caption, async (peerId, text) => {
+    const files = await Promise.all(
+      attachments.map(async (attachment) => ({
+        kind: attachment.kind,
+        fileName: attachment.name,
+        mime: attachment.mime,
+        dataBase64: await readBase64(attachment.uri, attachment.name),
+      })),
+    );
+    return relayClient.sendMediaGroup(peerId, files, text || undefined);
+  });
 }
 
 export async function retryMessageFlow(
