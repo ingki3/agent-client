@@ -45,12 +45,14 @@ export function MessageTtsControls({ message }: { message: Message }) {
   const { color } = useTheme();
   const setMessageTts = useChatStore((s) => s.setMessageTts);
   const [busyMode, setBusyMode] = useState<TtsMode | null>(null);
+  const [selectedMode, setSelectedMode] = useState<TtsMode>(message.tts?.mode ?? 'explain');
 
   if (message.role !== 'agent' || !message.text.trim()) return null;
 
   const tts = message.tts;
   const isGenerating = tts?.status === 'generating';
   const isPlaying = tts?.status === 'playing' && sameMessage(message);
+  const busy = isGenerating || busyMode !== null;
 
   const play = async (mode: TtsMode) => {
     if (isPlaying && tts?.mode === mode) {
@@ -107,57 +109,71 @@ export function MessageTtsControls({ message }: { message: Message }) {
     }
   };
 
+  const playLabel = busy ? '음성 준비 중' : isPlaying ? '■ 중지' : '▶ 듣기';
+
   return (
-    <View style={{ marginTop: space[2], gap: space[2] }}>
-      {/* 듣기 메뉴 — 재생/정지 진입점 */}
-      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space[2] }}>
+    <View style={{ marginTop: space[2], gap: space[1] }}>
+      <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: space[3] }}>
+        {/* 듣기 — 동작 버튼: 선택된 방식으로 재생/정지 (채워진 primary 로 옵션과 구분) */}
         <Pressable
-          onPress={() => void play(tts?.mode ?? 'explain')}
+          onPress={() => void play(selectedMode)}
           accessibilityRole="button"
           accessibilityLabel={isPlaying ? '음성 중지' : '음성 듣기'}
-          disabled={isGenerating || busyMode !== null}
+          disabled={busy}
           style={({ pressed }) => ({
             borderRadius: radius.full,
-            borderWidth: 1,
-            borderColor: color('border-strong'),
-            backgroundColor: pressed ? color('surface-overlay') : color('surface-elevated'),
-            paddingHorizontal: space[3],
+            backgroundColor: isPlaying ? color('error') : color('primary'),
+            paddingHorizontal: space[4],
             paddingVertical: space[2],
-            opacity: isGenerating || busyMode !== null ? 0.7 : 1,
+            opacity: busy ? 0.7 : pressed ? 0.85 : 1,
           })}
         >
-          <Text style={{ color: color('text-primary'), fontSize: fontSize['body-sm'], fontWeight: '700' }}>
-            {isGenerating || busyMode ? '음성 준비 중' : isPlaying ? '중지' : '듣기'}
+          <Text style={{ color: color('on-primary'), fontSize: fontSize['body-sm'], fontWeight: '700' }}>
+            {playLabel}
           </Text>
         </Pressable>
-      </View>
 
-      {/* 듣기 방식 — 요약 / 대화형 모드 선택 (듣기 메뉴와 구분된 그룹) */}
-      <View style={{ gap: space[1] }}>
-        <Text style={{ color: color('text-secondary'), fontSize: fontSize.caption, fontWeight: '600' }}>
-          듣기 방식
-        </Text>
-        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space[2] }}>
-          {MODES.map((item) => {
-            const selected = tts?.mode === item.mode;
+        {/* 요약 / 대화형 — 옵션 선택 세그먼트 (연결된 토글: 동작이 아니라 '선택') */}
+        <View
+          accessibilityRole="radiogroup"
+          style={{
+            flexDirection: 'row',
+            borderRadius: radius.full,
+            borderWidth: 1,
+            borderColor: color('border'),
+            overflow: 'hidden',
+          }}
+        >
+          {MODES.map((item, idx) => {
+            const selected = selectedMode === item.mode;
             return (
               <Pressable
                 key={item.mode}
-                onPress={() => void play(item.mode)}
-                accessibilityRole="button"
-                accessibilityLabel={`${item.label} 듣기`}
-                disabled={isGenerating || busyMode !== null}
+                onPress={() => setSelectedMode(item.mode)}
+                accessibilityRole="radio"
+                accessibilityState={{ selected, disabled: busy }}
+                accessibilityLabel={`${item.label} 방식 선택`}
+                disabled={busy}
                 style={({ pressed }) => ({
-                  borderRadius: radius.full,
-                  borderWidth: 1,
-                  borderColor: selected ? color('primary') : color('border'),
-                  backgroundColor: selected ? color('trace-summary') : pressed ? color('surface-overlay') : color('surface-elevated'),
+                  backgroundColor: selected
+                    ? color('trace-summary')
+                    : pressed
+                      ? color('surface-overlay')
+                      : color('surface-elevated'),
                   paddingHorizontal: space[3],
                   paddingVertical: space[2],
-                  opacity: isGenerating || busyMode !== null ? 0.7 : 1,
+                  borderLeftWidth: idx === 0 ? 0 : 1,
+                  borderLeftColor: color('border'),
+                  opacity: busy ? 0.7 : 1,
                 })}
               >
-                <Text style={{ color: selected ? color('on-trace-summary') : color('text-primary'), fontSize: fontSize['body-sm'], fontWeight: '600' }}>
+                <Text
+                  style={{
+                    color: selected ? color('on-trace-summary') : color('text-secondary'),
+                    fontSize: fontSize['body-sm'],
+                    fontWeight: selected ? '700' : '600',
+                  }}
+                >
                   {item.label}
                 </Text>
               </Pressable>
