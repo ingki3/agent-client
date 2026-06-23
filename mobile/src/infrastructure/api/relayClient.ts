@@ -160,18 +160,27 @@ function absoluteRelayUrl(url?: string): string | undefined {
   return config.relayBase ? `${config.relayBase}${url}` : url;
 }
 
+/** Rewrite a message-like object's preview image + media url to absolute relay URLs. */
+function normalizeMediaUrls<T extends {
+  preview?: { image?: string } & Record<string, unknown>;
+  media?: { url?: string } & Record<string, unknown>;
+}>(item: T): T {
+  const normalized = { ...item };
+  if (normalized.preview?.image) {
+    const image = absoluteRelayUrl(normalized.preview.image);
+    normalized.preview = image ? { ...normalized.preview, image } : { ...normalized.preview };
+  }
+  if (normalized.media?.url) {
+    normalized.media = { ...normalized.media, url: absoluteRelayUrl(normalized.media.url) ?? normalized.media.url };
+  }
+  return normalized;
+}
+
 function normalizeRelayUpdates(updates: TgUpdate[]): TgUpdate[] {
   return updates.map((update) => {
     const message = update.message ?? update.edited_message;
     if (!message) return update;
-    const normalized = { ...message };
-    if (normalized.preview?.image) {
-      const image = absoluteRelayUrl(normalized.preview.image);
-      normalized.preview = image ? { ...normalized.preview, image } : { ...normalized.preview };
-    }
-    if (normalized.media?.url) {
-      normalized.media = { ...normalized.media, url: absoluteRelayUrl(normalized.media.url) ?? normalized.media.url };
-    }
+    const normalized = normalizeMediaUrls(message);
     return update.message
       ? { ...update, message: normalized }
       : { ...update, edited_message: normalized };
@@ -179,17 +188,7 @@ function normalizeRelayUpdates(updates: TgUpdate[]): TgUpdate[] {
 }
 
 function normalizeRelaySnapshots(messages: RelayMessageSnapshot[]): RelayMessageSnapshot[] {
-  return messages.map((message) => {
-    const normalized = { ...message };
-    if (normalized.preview?.image) {
-      const image = absoluteRelayUrl(normalized.preview.image);
-      normalized.preview = image ? { ...normalized.preview, image } : { ...normalized.preview };
-    }
-    if (normalized.media?.url) {
-      normalized.media = { ...normalized.media, url: absoluteRelayUrl(normalized.media.url) ?? normalized.media.url };
-    }
-    return normalized;
-  });
+  return messages.map((message) => normalizeMediaUrls(message));
 }
 
 export const relayClient = {
