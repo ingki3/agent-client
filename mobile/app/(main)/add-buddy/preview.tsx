@@ -15,6 +15,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { BotApiError } from '@/domain/rules/BotApiError';
 import { useTheme } from '@/ui/theme/ThemeProvider';
 import { fontSize, radius, space, touch } from '@/ui/theme/tokens';
+import { describeBotApiError } from '@/ui/utils/describeBotApiError';
 
 import {
   clearAddBuddyDraft,
@@ -28,9 +29,7 @@ function describeError(err: unknown): string {
     return `이미 등록된 친구 (“${err.existing.displayName}”) 입니다.`;
   }
   if (err instanceof BotApiError) {
-    if (err.kind === 'invalid_token') return '유효하지 않은 토큰입니다.';
-    if (err.kind === 'network_error') return '네트워크에 연결할 수 없습니다.';
-    return '봇 정보를 가져오지 못했습니다.';
+    return describeBotApiError(err) ?? '봇 정보를 가져오지 못했습니다.';
   }
   return '친구 추가에 실패했습니다.';
 }

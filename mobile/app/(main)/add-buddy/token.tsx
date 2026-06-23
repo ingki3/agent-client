@@ -15,17 +15,17 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { BotApiError } from '@/domain/rules/BotApiError';
 import { useTheme } from '@/ui/theme/ThemeProvider';
 import { fontSize, radius, space, touch } from '@/ui/theme/tokens';
+import { describeBotApiError } from '@/ui/utils/describeBotApiError';
 
 import { setAddBuddyDraft } from '../../_runtime/add-buddy-draft';
 import { previewBuddyFromToken } from '../../_runtime/buddies';
 
 function describeError(err: unknown): string {
   if (err instanceof BotApiError) {
-    if (err.kind === 'invalid_token') return '유효하지 않은 토큰입니다.';
-    if (err.kind === 'network_error') return '네트워크에 연결할 수 없습니다.';
-    if (err.kind === 'rate_limited') return '요청이 너무 많습니다. 잠시 후 다시 시도해 주세요.';
-    if (err.kind === 'aborted') return '요청이 취소되었습니다.';
-    return '토큰 확인에 실패했습니다.';
+    return describeBotApiError(err)
+      ?? (err.kind === 'rate_limited' ? '요청이 너무 많습니다. 잠시 후 다시 시도해 주세요.'
+        : err.kind === 'aborted' ? '요청이 취소되었습니다.'
+        : '토큰 확인에 실패했습니다.');
   }
   return '알 수 없는 오류가 발생했습니다.';
 }
