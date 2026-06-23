@@ -119,6 +119,11 @@ export type PeerRow = {
   local_seq: number;
 };
 
+/** Parse a `payload_json` column into its typed shape. */
+function parsePayload<T>(row: { payload_json: string }): T {
+  return JSON.parse(row.payload_json) as T;
+}
+
 function nextSnapshotCursor(peerId: number): number {
   const row = db
     .prepare("SELECT COALESCE(MAX(cursor), 0) + 1 AS cursor FROM message_snapshots WHERE peer_id=?")
@@ -130,7 +135,7 @@ function readSnapshot(peerId: number, messageId: number): NormalizedMessage | un
   const row = db
     .prepare("SELECT payload_json FROM message_snapshots WHERE peer_id=? AND message_id=?")
     .get(peerId, messageId) as { payload_json: string } | undefined;
-  return row ? JSON.parse(row.payload_json) as NormalizedMessage : undefined;
+  return row ? parsePayload<NormalizedMessage>(row) : undefined;
 }
 
 function comparableSnapshot(message: NormalizedMessage): Omit<NormalizedMessage, "cursor" | "updatedAt"> {
@@ -300,7 +305,7 @@ export const store = {
         "SELECT payload_json FROM message_snapshots WHERE peer_id=? AND cursor>=? ORDER BY cursor ASC LIMIT ?",
       )
       .all(peerId, lowerBound, limit) as { payload_json: string }[];
-    return rows.map((r) => JSON.parse(r.payload_json) as NormalizedMessage);
+    return rows.map((r) => parsePayload<NormalizedMessage>(r));
   },
 
   // `since` is Telegram-getUpdates style: the NEXT expected update_id (the client sends
@@ -313,7 +318,7 @@ export const store = {
         "SELECT payload_json FROM updates WHERE bot_id=? AND update_id>=? ORDER BY update_id ASC LIMIT ?",
       )
       .all(botId, since, limit) as { payload_json: string }[];
-    return rows.map((r) => JSON.parse(r.payload_json) as TgUpdate);
+    return rows.map((r) => parsePayload<TgUpdate>(r));
   },
 
   /** Resolve botId from a device's subscription (for /pull auth scoping). */
