@@ -54,7 +54,10 @@ export const ChatBubbleV2 = memo(function ChatBubbleV2({ message, onLongPress }:
         paddingVertical: space[1],
       }}
     >
-      <View style={{ maxWidth: isUser ? '84%' : '94%' }}>
+      {/* User bubbles hug their content (right-aligned, ≤84%); agent bubbles
+          fill the row so they keep equal left/right margins and wrap text at a
+          readable width instead of shrinking to content. */}
+      <View style={isUser ? { maxWidth: '84%' } : { flex: 1 }}>
         <Pressable
           onLongPress={longPressable ? () => onLongPress?.(message) : undefined}
           delayLongPress={350}
