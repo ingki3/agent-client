@@ -28,7 +28,15 @@ export function registerMessageRoutes(app: FastifyInstance) {
         sinceUpdateId: Number.isFinite(body.sinceUpdateId) ? body.sinceUpdateId : 0,
         limit,
       });
-      const messages = store.listMessageSnapshots(body.peerId, since, limit);
+      // Snapshot-cursor clients (sinceCursor) must NOT get the legacy reset-to-0
+      // fallback: when the client is caught up (since > head), that fallback
+      // replayed from cursor 0, so the client never stabilised at head and
+      // re-crawled forever — new messages then showed up minutes late. Only the
+      // legacy bot-token path (sinceUpdateId only) keeps the fallback.
+      const usingSnapshotCursor = Number.isFinite(body.sinceCursor);
+      const messages = store.listMessageSnapshots(body.peerId, since, limit, {
+        legacyCursorFallback: !usingSnapshotCursor,
+      });
       const cursor = messages.length ? messages[messages.length - 1]!.cursor + 1 : since;
       const legacyCursor = updates.length ? updates[updates.length - 1]!.update_id + 1 : (body.sinceUpdateId ?? 0);
       log.info(`messages sync device=${body.deviceId} peer=${body.peerId} since=${since} updates=${updates.length} messages=${messages.length}`);
@@ -60,6 +68,7 @@ export function registerMessageRoutes(app: FastifyInstance) {
     for (const message of initial) {
       res.write(sseData({ type: "message_updated", message }));
     }
+    log.info(`stream open device=${deviceId} peer=${peerId} since=${since} replay=${initial.length} cursor=${cursor}`);
     const unsubscribe = messageStreams.subscribe(peerId, (event) => {
       res.write(sseData(event));
     });
@@ -67,6 +76,7 @@ export function registerMessageRoutes(app: FastifyInstance) {
       res.write(": heartbeat\n\n");
     }, 25000);
     req.raw.on("close", () => {
+      log.info(`stream close device=${deviceId} peer=${peerId}`);
       clearInterval(heartbeat);
       unsubscribe();
     });
