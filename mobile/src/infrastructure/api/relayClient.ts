@@ -208,18 +208,19 @@ export const relayClient = {
     return !!body?.ok;
   },
 
-  /** Register device + peers/bots. Persists the returned deviceSecret on first call. */
-  async register(expoPushToken: string, bots: RelayBot[]): Promise<boolean> {
+  /** Register device + peers/bots. Persists the returned deviceSecret on first call.
+   *  `fcmToken` (raw FCM device token) is the wake channel for the phone-command pipe. */
+  async register(expoPushToken: string, bots: RelayBot[], fcmToken?: string): Promise<boolean> {
     if (!config.relayBase || bots.length === 0) return false;
     const id = await deviceId();
     try {
       console.log(
-        `[relay] register start device=${id} platform=${Platform.OS} bots=${bots.length} token_len=${expoPushToken.length}`,
+        `[relay] register start device=${id} platform=${Platform.OS} bots=${bots.length} token_len=${expoPushToken.length} fcm=${fcmToken ? "yes" : "no"}`,
       );
       const res = await fetch(`${config.relayBase}/register`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await authHeader()) },
-        body: JSON.stringify({ deviceId: id, expoPushToken, platform: Platform.OS, gateway: config.gateway, bots }),
+        body: JSON.stringify({ deviceId: id, expoPushToken, platform: Platform.OS, gateway: config.gateway, bots, ...(fcmToken ? { fcmToken } : {}) }),
       });
       if (!res.ok) {
         console.warn(`[relay] register failed status=${res.status}`);
