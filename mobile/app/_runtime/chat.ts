@@ -9,8 +9,6 @@
  * file compilable before that PR lands; the port resolves to the real adapter
  * once BIZ-265 merges (same file path, no rename).
  */
-import { v4 as uuidv4 } from 'uuid';
-
 import { useBuddiesStore } from '@/application/stores/buddies-store';
 import { useChatStore } from '@/application/stores/chat-store';
 import { useNetworkStore } from '@/application/stores/network-store';
@@ -33,6 +31,7 @@ import { relayClient, type RelayStreamHandle } from '@/infrastructure/api/relayC
 import { readBase64, type PickedAttachment } from '@/infrastructure/attachments';
 import { createExpoSqliteDatabase } from '@/infrastructure/storage/adapters/expo-sqlite-adapter';
 import { applyMigrations, type Database } from '@/infrastructure/storage/database';
+import { uid } from '@/lib/id';
 import { BuddiesRepository } from '@/infrastructure/storage/repositories/buddies-repo';
 import { MessageSyncStateRepository } from '@/infrastructure/storage/repositories/message-sync-state-repo';
 import { MessagesRepository } from '@/infrastructure/storage/repositories/messages-repo';
@@ -91,7 +90,10 @@ export function initChatRuntime(): void {
     relaySendMessage: (peerId, text, clientTag) => relayClient.sendAs(peerId, text, clientTag),
     relaySyncMessages: (peerId, sinceUpdateId, limit) => relayClient.syncMessages(peerId, sinceUpdateId, limit),
     relaySyncMessageSnapshots: (peerId, sinceCursor, limit) => relayClient.syncMessageSnapshots(peerId, sinceCursor, limit),
-    newClientMessageId: () => uuidv4(),
+    // uid(), not uuid: uuid v4 needs crypto.getRandomValues, which Hermes
+    // release builds lack without a native polyfill — it threw on every text
+    // send once the screen stopped supplying its own clientMessageId.
+    newClientMessageId: () => uid('msg'),
     now: () => Date.now(),
   };
 }
