@@ -135,6 +135,11 @@ export function hydrateChatScreen(buddyId: BuddyId): Message[] {
 }
 
 export function markBuddyRead(buddyId: BuddyId): void {
+  // Called on every stream event — skip the SQLite write when the store
+  // already shows the buddy as read. Falls through when the buddy is not
+  // hydrated in the store (correctness over savings).
+  const current = useBuddiesStore.getState().buddies[buddyId];
+  if (current && current.unreadCount === 0) return;
   const deps = getDeps();
   deps.buddiesRepo.markRead(buddyId);
   useBuddiesStore.getState().markRead(buddyId);
