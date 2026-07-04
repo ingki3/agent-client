@@ -18,6 +18,7 @@
   "dependencies": {
     "@react-native-async-storage/async-storage": "2.2.0",
     "@react-native-community/netinfo": "11.5.2",
+    "@react-navigation/elements": "^2.9.18",
     "@shopify/flash-list": "2.0.2",
     "eventsource-parser": "^3.0.1",
     "expo": "^55.0.24",

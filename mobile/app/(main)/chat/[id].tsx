@@ -26,6 +26,7 @@ import {
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { FlashList } from '@shopify/flash-list';
+import { useHeaderHeight } from '@react-navigation/elements';
 
 import { useBuddiesStore } from '@/application/stores/buddies-store';
 import { useChatStore } from '@/application/stores/chat-store';
@@ -58,7 +59,6 @@ export default function ChatScreen() {
   const buddy = useBuddiesStore((s) => (buddyId ? s.buddies[buddyId] : undefined));
   const messageIds = useChatStore((s) => (buddyId ? s.byBuddy[buddyId] : undefined)) ?? [];
   const messagesMap = useChatStore((s) => s.messages);
-  const appendMessage = useChatStore((s) => s.appendMessage);
   const isOnline = useNetworkStore((s) => s.isOnline);
 
   const messages = useMemo(
@@ -77,9 +77,11 @@ export default function ChatScreen() {
     openAttachMenu,
     removePendingAttachment,
     clearPendingAttachments,
+    restorePendingAttachments,
   } = useChatAttachments({
     buddyId,
   });
+  const headerHeight = useHeaderHeight();
 
   // Boot the runtime + hydrate SQLite history once per screen mount.
   useEffect(() => {
@@ -126,61 +128,53 @@ export default function ChatScreen() {
       setSending(true);
       setDraft('');
       clearPendingAttachments();
+      const fileItems = attachments.filter(
+        (item): item is Extract<typeof item, { type: 'file' }> => item.type === 'file',
+      );
+      let sentFiles = 0;
       try {
-        const files = attachments
-          .filter((item) => item.type === 'file')
-          .map((item) => item.file);
         const locations = attachments
           .filter((item) => item.type === 'location')
           .map((item) => item.url);
         const locationText = locations.map((url) => `[내 위치 보기](${url})`).join('\n');
         const fullCaption = [text, locationText].filter(Boolean).join('\n');
 
-        for (let index = 0; index < files.length; index += 1) {
-          const sent = await sendAttachmentFlow(buddyId, files[index]!, index === 0 ? fullCaption : '');
+        for (let index = 0; index < fileItems.length; index += 1) {
+          const sent = await sendAttachmentFlow(buddyId, fileItems[index]!.file, index === 0 ? fullCaption : '');
           if (sent.status === 'failed') {
             throw new Error('attachment_send_failed');
           }
+          sentFiles += 1;
         }
-        if (!files.length && fullCaption) {
+        if (!fileItems.length && fullCaption) {
           await sendMessageFlow(buddyId, fullCaption);
         }
       } catch {
-        Alert.alert('첨부 전송 실패', '파일을 전송하지 못했습니다. relay 연결을 확인해 주세요.');
+        // The failed file has a retryable bubble (and carries the caption);
+        // files after it never left the device — put them back in the composer.
+        restorePendingAttachments(fileItems.slice(sentFiles + 1));
+        Alert.alert('첨부 전송 실패', '파일을 전송하지 못했습니다. 남은 첨부는 입력창에 다시 담아뒀습니다.');
       } finally {
         setSending(false);
       }
       return;
     }
-    const createdAt = Date.now();
-    const clientMessageId = `local-${createdAt}-${Math.random().toString(36).slice(2, 8)}`;
-    const optimistic: Message = {
-      id: null,
-      clientMessageId,
-      buddyId,
-      role: 'user',
-      text,
-      status: isOnline ? 'sending' : 'queued',
-      createdAt,
-      traceId: null,
-    };
+    // Single optimistic path: sendMessageFlow persists to SQLite and appends to
+    // the store synchronously (onPersisted) before any network await, so the
+    // bubble shows up just as fast as a screen-side append did.
     setSending(true);
     setDraft('');
-    appendMessage(optimistic);
     try {
-      await sendMessageFlow(buddyId, text, { clientMessageId, createdAt });
-    } catch {
-      useChatStore.getState().setStatus(clientMessageId, 'failed');
+      await sendMessageFlow(buddyId, text);
     } finally {
       setSending(false);
     }
   }, [
-    appendMessage,
     buddyId,
     clearPendingAttachments,
     draft,
-    isOnline,
     pendingAttachments,
+    restorePendingAttachments,
     sending,
   ]);
 
@@ -256,7 +250,7 @@ export default function ChatScreen() {
       <KeyboardAvoidingView
         style={{ flex: 1, position: 'relative' }}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        keyboardVerticalOffset={Platform.OS === 'ios' ? 80 : 0}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? headerHeight : 0}
       >
         <FlashList
           ref={listRef}

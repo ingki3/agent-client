@@ -111,11 +111,18 @@ export function useChatAttachments({ buddyId }: Args) {
     setPendingAttachments([]);
   }, []);
 
+  /** Re-stage items that were cleared for a send that then failed mid-way. */
+  const restorePendingAttachments = useCallback((items: PendingChatAttachment[]) => {
+    if (!items.length) return;
+    setPendingAttachments((prev) => [...items, ...prev].slice(0, MAX_ATTACHMENTS));
+  }, []);
+
   return {
     attaching,
     pendingAttachments,
     openAttachMenu,
     removePendingAttachment,
     clearPendingAttachments,
+    restorePendingAttachments,
   };
 }
