@@ -57,6 +57,18 @@ function getDeps(): ChatUseCaseDeps {
 }
 
 /**
+ * Monotonic advance for the in-memory cursor. The stream and the poll loop race
+ * (an in-flight poll can finish after stream events already advanced the
+ * cursor), so plain assignment would rewind and re-fetch processed messages.
+ * Do NOT replace bootedOffsets with the repo cursor: the legacy bot-token
+ * getUpdates path never persists to message_sync_state, so this map is its
+ * only offset memory.
+ */
+function advanceBootedOffset(buddyId: BuddyId, cursor: number): void {
+  bootedOffsets[buddyId] = Math.max(bootedOffsets[buddyId] ?? 0, cursor);
+}
+
+/**
  * Idempotent cold-start wiring. Safe to call from every chat-related screen's
  * useEffect — the DB open + migrations + bot-token adapter resolve run only once.
  */
@@ -337,7 +349,7 @@ export function startPolling(buddyId: BuddyId): () => void {
     try {
       const offset = bootedOffsets[buddyId] ?? deps.messageSyncStateRepo.getCursor(buddyId);
       const outcome = await receiveUpdatesUseCase(deps, { buddyId, offset });
-      bootedOffsets[buddyId] = outcome.newOffset;
+      advanceBootedOffset(buddyId, outcome.newOffset);
       for (const msg of outcome.inserted) {
         useChatStore.getState().appendMessage(msg);
       }
@@ -389,7 +401,7 @@ function startRelayStream(buddyId: BuddyId, sinceCursor: number): void {
     const persisted = persistRemoteMessage(deps, event.message);
     if (!persisted) return;
     useChatStore.getState().appendMessage(persisted);
-    bootedOffsets[buddyId] = Math.max(bootedOffsets[buddyId] ?? sinceCursor, event.message.cursor);
+    advanceBootedOffset(buddyId, event.message.cursor);
     markBuddyRead(buddyId);
   }).then((handle) => {
     pendingStreams.delete(buddyId);
