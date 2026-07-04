@@ -39,6 +39,9 @@ export type RelayMessageSnapshot = {
   media?: Pick<Attachment, 'kind' | 'name' | 'mime' | 'size'> & { url: string };
   helperItems?: HelperItem[];
   inlineKeyboard?: InlineKeyboard | null;
+  /** Sent by newer relays on the user's own outgoing echo: the clientMessageId
+      supplied on /send, so the echo can adopt the optimistic local row. */
+  clientTag?: string;
 };
 
 export type RelaySnapshotSyncResult = {

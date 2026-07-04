@@ -39,6 +39,9 @@ export type TgMessage = {
   agent_payloads?: AgentPayload[];
   helper_items?: HelperItem[];
   inline_keyboard?: InlineKeyboard | null;
+  /** The sender app's clientMessageId, matched onto the outgoing echo so the
+      app can reconcile it with its optimistic bubble (no duplicate). */
+  client_tag?: string;
 };
 
 export type TgUpdate = {
@@ -61,6 +64,9 @@ export type NormalizedMessage = {
   media?: TgMessage["media"];
   helperItems?: HelperItem[];
   inlineKeyboard?: InlineKeyboard | null;
+  /** Present on the user's own outgoing messages when the sending app supplied
+      a clientTag on /send — lets the app adopt its optimistic bubble. */
+  clientTag?: string;
 };
 
 export type MessageStreamEvent =

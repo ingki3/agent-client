@@ -75,8 +75,8 @@ export async function flushOutbox(
       deps.db.transaction(() => {
         // outbox FK references messages(id) — remove the queue entry first.
         deps.outboxRepo.remove(entry.messageId);
-        deps.messagesRepo.updateServerId(entry.messageId, serverMessageId);
-        deps.messagesRepo.updateStatus(entry.messageId, 'sent');
+        // adoptServerId: tolerant of the echo row landing first (PK conflict).
+        deps.messagesRepo.adoptServerId(entry.messageId, serverMessageId);
       });
       sent.push(entry.messageId);
     } catch (err) {

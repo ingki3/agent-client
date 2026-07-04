@@ -30,6 +30,7 @@ export function snapshotFromUpdate(update: TgUpdate): Omit<NormalizedMessage, "c
     ...(message.media ? { media: message.media } : {}),
     ...(message.helper_items ? { helperItems: message.helper_items } : {}),
     ...(message.inline_keyboard !== undefined ? { inlineKeyboard: message.inline_keyboard } : {}),
+    ...(message.client_tag ? { clientTag: message.client_tag } : {}),
   };
 }
 

@@ -16,6 +16,7 @@ import { NewMessage } from "telegram/events/index.js";
 import { EditedMessage } from "telegram/events/EditedMessage.js";
 import { computeCheck } from "telegram/Password.js";
 import { CustomFile } from "telegram/client/uploads.js";
+import { clientTags } from "./clientTags.js";
 import { config } from "./config.js";
 import { store } from "./store.js";
 import { sendPushes } from "./push.js";
@@ -56,6 +57,10 @@ function attachReceiver(deviceId: string, client: TelegramClient): void {
       if (!peer) return; // not a subscribed peer — ignore
       const update = updateFromTelegramMessage({ deviceId, peer, msg, edited });
       if (!update?.message) return;
+      if (outgoing && !edited) {
+        const tag = clientTags.matchOutgoing(deviceId, peerId, update.message.text ?? "");
+        if (tag) update.message.client_tag = tag;
+      }
       const updateId = update.message.message_id;
       const baseUpdateId = updateId * 1000;
       const text = update.message.text ?? "";
@@ -207,21 +212,29 @@ export const mtproto = {
   },
 
   /** Send `text` to `peerId` as the user. Returns the sent message id. */
-  async sendAs(deviceId: string, peerId: number, text: string, replyTo?: number): Promise<number> {
+  async sendAs(deviceId: string, peerId: number, text: string, replyTo?: number, clientTag?: string): Promise<number> {
     const client = ensureClient(deviceId);
     const peer = store.getAccountPeer(deviceId, peerId);
     const target: string | number = peer?.username ? peer.username : peerId;
     const opts = replyTo ? { message: text, replyTo } : { message: text };
+    // Register BEFORE the send: the NewMessage echo can arrive before
+    // sendMessage resolves, and the echo handler is what stamps the tag.
+    if (clientTag) clientTags.register(deviceId, peerId, text, clientTag);
     try {
       const sent = (await client.sendMessage(target, opts)) as { id: number };
       return Number(sent.id);
     } catch (e) {
-      const sent = (await retrySendTarget(
-        peer,
-        (retryTarget) => client.sendMessage(retryTarget, opts),
-        async (username) => { await this.resolvePeer(deviceId, username); },
-      )) as { id: number };
-      return Number(sent.id);
+      try {
+        const sent = (await retrySendTarget(
+          peer,
+          (retryTarget) => client.sendMessage(retryTarget, opts),
+          async (username) => { await this.resolvePeer(deviceId, username); },
+        )) as { id: number };
+        return Number(sent.id);
+      } catch (retryErr) {
+        if (clientTag) clientTags.discard(clientTag);
+        throw retryErr;
+      }
     }
   },
 

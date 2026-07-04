@@ -133,8 +133,10 @@ function markSent(
   serverMessageId: ServerMessageId,
 ): SendMessageOutcome {
   deps.db.transaction(() => {
-    deps.messagesRepo.updateServerId(message.clientMessageId, serverMessageId);
-    deps.messagesRepo.updateStatus(message.clientMessageId, 'sent');
+    // adoptServerId (not updateServerId): the relay echo of this send can land
+    // first as its own row with id = serverMessageId — a plain PK update would
+    // conflict. Adoption merges + deletes the echo row, then assigns the id.
+    deps.messagesRepo.adoptServerId(message.clientMessageId, serverMessageId);
   });
   return {
     kind: 'sent',
