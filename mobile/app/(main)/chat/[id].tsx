@@ -166,6 +166,12 @@ export default function ChatScreen() {
     setDraft('');
     try {
       await sendMessageFlow(buddyId, text);
+    } catch {
+      // sendMessageFlow maps network failures to outcomes; reaching here means
+      // a runtime error before the optimistic insert. Surface it and give the
+      // draft back instead of failing silently.
+      setDraft(text);
+      Alert.alert('전송 실패', '메시지를 보내지 못했습니다. 다시 시도해 주세요.');
     } finally {
       setSending(false);
     }
