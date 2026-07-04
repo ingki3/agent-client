@@ -4,8 +4,7 @@
  */
 import type { BuddyId } from '@/domain/entities/Buddy';
 import type { Message } from '@/domain/entities/Message';
-import { filterLikelyDuplicateMessages } from '@/domain/messages/duplicateMessages';
-import { isHiddenHelperSubmitMessage } from '@/domain/messages/hiddenMessages';
+import { selectVisibleMessages } from '@/domain/messages/duplicateMessages';
 
 import type { ChatUseCaseDeps } from './types';
 
@@ -19,8 +18,5 @@ export function listMessages(
   deps: Pick<ChatUseCaseDeps, 'messagesRepo'>,
   input: ListMessagesInput,
 ): Message[] {
-  const messages = deps.messagesRepo
-    .listByBuddy(input.buddyId, input.limit ?? 200)
-    .filter((message) => !isHiddenHelperSubmitMessage(message));
-  return filterLikelyDuplicateMessages(messages);
+  return selectVisibleMessages(deps.messagesRepo.listByBuddy(input.buddyId, input.limit ?? 200));
 }

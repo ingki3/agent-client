@@ -11,7 +11,7 @@
  */
 import type { BuddyId } from '@/domain/entities/Buddy';
 import type { Message } from '@/domain/entities/Message';
-import { filterLikelyDuplicateMessages } from '@/domain/messages/duplicateMessages';
+import { selectVisibleMessages } from '@/domain/messages/duplicateMessages';
 import { isHiddenHelperSubmitMessage } from '@/domain/messages/hiddenMessages';
 
 import { persistRemoteMessage } from './persistRemoteMessage';
@@ -150,8 +150,9 @@ async function receiveSnapshotSync(
 }
 
 function visibleInserted(deps: ChatUseCaseDeps, buddyId: BuddyId, inserted: Message[]): Message[] {
+  if (inserted.length === 0) return [];
   const visibleIds = new Set(
-    filterLikelyDuplicateMessages(deps.messagesRepo.listByBuddy(buddyId, 200))
+    selectVisibleMessages(deps.messagesRepo.listByBuddy(buddyId, 200))
       .map((message) => message.clientMessageId),
   );
   return sortConversationChronology(inserted).filter((message) => visibleIds.has(message.clientMessageId));

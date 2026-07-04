@@ -528,7 +528,7 @@ describe('receiveUpdates', () => {
             role: 'agent',
             text: "OpenAI가 준비 중인 **'AI OS'**는 단순한 챗봇 서비스인 ChatGPT를 넘어섭니다.",
             status: 'complete',
-            date: 1780907581,
+            date: 1780907574,
             updatedAt: 2,
             cursor: 3686,
           },
@@ -540,6 +540,45 @@ describe('receiveUpdates', () => {
 
     expect(outcome.inserted.map((message) => message.id)).toEqual(['6483']);
     expect(listMessages(deps, { buddyId: '1001' }).map((message) => message.id)).toEqual(['6483']);
+    deps.db.close();
+  });
+
+  it('keeps identical agent answers with distinct message_ids arriving more than 5s apart', async () => {
+    const deps = openDeps({
+      tokenOverride: {},
+      relaySyncMessageSnapshots: async () => ({
+        cursor: 3690,
+        messages: [
+          {
+            id: '6483',
+            peerId: 1001,
+            messageId: 6483,
+            role: 'agent',
+            text: '네, 완료했습니다.',
+            status: 'complete',
+            date: 1780907571,
+            updatedAt: 1,
+            cursor: 3685,
+          },
+          {
+            id: '6484',
+            peerId: 1001,
+            messageId: 6484,
+            role: 'agent',
+            text: '네, 완료했습니다.',
+            status: 'complete',
+            date: 1780907601,
+            updatedAt: 2,
+            cursor: 3686,
+          },
+        ],
+      }),
+    });
+
+    const outcome = await receiveUpdates(deps, { buddyId: '1001', offset: 0 });
+
+    expect(outcome.inserted.map((message) => message.id)).toEqual(['6483', '6484']);
+    expect(listMessages(deps, { buddyId: '1001' }).map((message) => message.id)).toEqual(['6483', '6484']);
     deps.db.close();
   });
 
@@ -631,7 +670,7 @@ describe('receiveUpdates', () => {
       role: 'agent',
       text: "OpenAI가 준비 중인 **'AI OS'**는 단순한 챗봇 서비스인 ChatGPT를 넘어섭니다.",
       status: 'sent',
-      createdAt: 1780907581000,
+      createdAt: 1780907574000,
       traceId: null,
     });
 

@@ -103,12 +103,35 @@ describe('useChatStore', () => {
       role: 'agent',
       text: 'same answer',
       status: 'sent',
-      createdAt: 1780907581000,
+      createdAt: 1780907574000,
     });
 
     const state = useChatStore.getState();
     expect(state.byBuddy.b1).toEqual(['6483']);
     expect(state.messages['6484']).toBeUndefined();
+  });
+
+  it('keeps identical agent messages with distinct ids more than 5s apart', () => {
+    const s = useChatStore.getState();
+    s.appendMessage({
+      ...makeMessage('7001'),
+      id: '7001',
+      role: 'agent',
+      text: 'same answer',
+      status: 'sent',
+      createdAt: 1780907571000,
+    });
+    s.appendMessage({
+      ...makeMessage('7002'),
+      id: '7002',
+      role: 'agent',
+      text: 'same answer',
+      status: 'sent',
+      createdAt: 1780907601000,
+    });
+
+    const state = useChatStore.getState();
+    expect(state.byBuddy.b1).toEqual(['7001', '7002']);
   });
 
   it('does not keep hidden helper submit context messages', () => {
