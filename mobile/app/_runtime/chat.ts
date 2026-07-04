@@ -224,8 +224,8 @@ async function sendAttachmentsCommon(
   try {
     const messageId = await send(peerId, text);
     deps.db.transaction(() => {
-      deps.messagesRepo.updateServerId(clientMessageId, String(messageId));
-      deps.messagesRepo.updateStatus(clientMessageId, 'sent');
+      // adoptServerId: tolerant of the echo row landing first (PK conflict).
+      deps.messagesRepo.adoptServerId(clientMessageId, String(messageId));
     });
     useChatStore.getState().setServerId(clientMessageId, String(messageId));
     useChatStore.getState().setStatus(clientMessageId, 'sent');

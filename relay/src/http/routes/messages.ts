@@ -86,8 +86,24 @@ export function registerMessageRoutes(app: FastifyInstance) {
     const body = req.body as SendBody;
     if (!body?.deviceId || !body?.peerId || !body?.text) return replyError(reply, 400, "bad request");
     if (!requireDeviceAuth(req, body.deviceId, reply)) return;
+    const clientTag = typeof body.clientTag === "string" && body.clientTag ? body.clientTag : undefined;
     try {
-      const messageId = await mtproto.sendAs(body.deviceId, body.peerId, body.text, body.replyTo);
+      const messageId = await mtproto.sendAs(body.deviceId, body.peerId, body.text, body.replyTo, clientTag);
+      // Belt-and-braces: if the echo was snapshotted before the pending tag was
+      // matched (or matching missed), stamp the tag now so a republish carries it.
+      if (clientTag) {
+        try {
+          const existing = store.getMessageSnapshot(body.peerId, messageId);
+          if (existing && !existing.clientTag) {
+            const result = store.upsertMessageSnapshot({ ...existing, clientTag });
+            if (result.changed) {
+              messageStreams.publish(body.peerId, { type: "message_updated", message: result.message });
+            }
+          }
+        } catch {
+          // best-effort only — the app's text fallback covers a missed stamp
+        }
+      }
       return reply.send({ ok: true, messageId });
     } catch (e) {
       return mtprotoErr(reply, e);

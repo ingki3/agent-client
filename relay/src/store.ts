@@ -151,6 +151,7 @@ function comparableSnapshot(message: NormalizedMessage): Omit<NormalizedMessage,
     ...(message.media ? { media: message.media } : {}),
     ...(message.helperItems ? { helperItems: message.helperItems } : {}),
     ...(message.inlineKeyboard !== undefined ? { inlineKeyboard: message.inlineKeyboard } : {}),
+    ...(message.clientTag ? { clientTag: message.clientTag } : {}),
   };
 }
 

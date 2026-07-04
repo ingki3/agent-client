@@ -59,6 +59,10 @@ function stringifyJson(value: unknown): string | null {
   return value == null ? null : JSON.stringify(value);
 }
 
+function compactText(text: string): string {
+  return text.replace(/\s+/g, ' ').trim();
+}
+
 export class MessagesRepository {
   constructor(private readonly db: Database) {}
 
@@ -90,6 +94,69 @@ export class MessagesRepository {
       serverId,
       clientMessageId,
     ]);
+  }
+
+  /**
+   * Adopt a server identity onto a locally-created row and mark it sent.
+   *
+   * `messages.id` is the PRIMARY KEY, and the relay echo of our own send can be
+   * inserted (id = clientMessageId = serverId) before /send resolves — a plain
+   * updateServerId then hits a PK conflict and fails the whole markSent
+   * transaction. This merges the echo row's rich fields into the local row,
+   * deletes the echo row, and only then assigns the server id. Idempotent when
+   * the local row already carries the server id.
+   */
+  adoptServerId(clientMessageId: ClientMessageId, serverId: ServerMessageId): void {
+    const echo = this.findByServerId(serverId);
+    if (echo && echo.clientMessageId !== clientMessageId) {
+      const local = this.findByClientMessageId(clientMessageId);
+      if (!local) return;
+      this.db.run(
+        `UPDATE messages
+         SET preview_json = COALESCE(preview_json, ?),
+             helper_items_json = COALESCE(helper_items_json, ?),
+             inline_keyboard_json = COALESCE(inline_keyboard_json, ?),
+             attachments_json = COALESCE(attachments_json, ?)
+         WHERE client_message_id = ?`,
+        [
+          stringifyJson(echo.preview),
+          stringifyJson(echo.helperItems),
+          stringifyJson(echo.inlineKeyboard),
+          stringifyJson(echo.attachments),
+          clientMessageId,
+        ],
+      );
+      this.db.run('DELETE FROM messages WHERE client_message_id = ?', [echo.clientMessageId]);
+    }
+    this.db.run(
+      "UPDATE messages SET id = ?, status = 'sent' WHERE client_message_id = ?",
+      [serverId, clientMessageId],
+    );
+  }
+
+  /**
+   * Text fallback for echo adoption when the relay does not send a clientTag:
+   * the OLDEST pending (sending/queued) user-role row with identical
+   * whitespace-compacted text created within `windowMs` of `now` — FIFO so a
+   * double-send of the same text adopts echoes in order.
+   */
+  findPendingUserMessageByText(
+    buddyId: BuddyId,
+    text: string,
+    windowMs: number,
+    now: number,
+  ): Message | null {
+    const compacted = compactText(text);
+    if (!compacted) return null;
+    const rows = this.db.all<MessageRow>(
+      `SELECT * FROM messages
+       WHERE buddy_id = ? AND role = 'user' AND status IN ('sending', 'queued')
+         AND created_at >= ?
+       ORDER BY created_at ASC`,
+      [buddyId, now - windowMs],
+    );
+    const match = rows.find((row) => compactText(row.text) === compacted);
+    return match ? rowToMessage(match) : null;
   }
 
   updateStatus(clientMessageId: ClientMessageId, status: MessageStatus): void {

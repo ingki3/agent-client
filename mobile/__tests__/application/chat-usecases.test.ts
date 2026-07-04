@@ -755,6 +755,168 @@ describe('persistRemoteMessage', () => {
     expect(deps.messageSyncStateRepo.getCursor('1001')).toBe(21);
     deps.db.close();
   });
+
+  it('adopts the optimistic local row via clientTag instead of inserting a duplicate', () => {
+    const deps = openDeps({ tokenOverride: {} });
+    deps.messagesRepo.insert({
+      id: null,
+      clientMessageId: 'cm-echo-1',
+      buddyId: '1001',
+      role: 'user',
+      text: 'hello agent',
+      status: 'sending',
+      createdAt: 1780575300500,
+      traceId: null,
+    });
+
+    const adopted = persistRemoteMessage(deps, {
+      id: '8001', peerId: 1001, messageId: 8001, role: 'user', text: 'hello agent',
+      status: 'complete', date: 1780575301, updatedAt: 1, cursor: 30,
+      clientTag: 'cm-echo-1',
+    });
+
+    expect(adopted?.clientMessageId).toBe('cm-echo-1');
+    expect(adopted?.id).toBe('8001');
+    expect(adopted?.status).toBe('sent');
+    expect(deps.messagesRepo.listByBuddy('1001')).toHaveLength(1);
+    deps.db.close();
+  });
+
+  it('adopts a pending user row by text when the relay sends no clientTag', () => {
+    const deps = openDeps({ tokenOverride: {} });
+    deps.messagesRepo.insert({
+      id: null,
+      clientMessageId: 'cm-echo-2',
+      buddyId: '1001',
+      role: 'user',
+      text: '  hello   fallback  ',
+      status: 'sending',
+      createdAt: 1780575400500,
+      traceId: null,
+    });
+
+    const adopted = persistRemoteMessage(deps, {
+      id: '8002', peerId: 1001, messageId: 8002, role: 'user', text: 'hello fallback',
+      status: 'complete', date: 1780575401, updatedAt: 1, cursor: 31,
+    });
+
+    expect(adopted?.clientMessageId).toBe('cm-echo-2');
+    expect(adopted?.id).toBe('8002');
+    expect(deps.messagesRepo.listByBuddy('1001')).toHaveLength(1);
+    deps.db.close();
+  });
+
+  it('does not adopt already-sent rows or old pending rows via the text fallback', () => {
+    const deps = openDeps({ tokenOverride: {} });
+    deps.messagesRepo.insert({
+      id: '7999',
+      clientMessageId: 'cm-sent',
+      buddyId: '1001',
+      role: 'user',
+      text: 'same words',
+      status: 'sent',
+      createdAt: 1780575500000,
+      traceId: null,
+    });
+    deps.messagesRepo.insert({
+      id: null,
+      clientMessageId: 'cm-stale',
+      buddyId: '1001',
+      role: 'user',
+      text: 'same words',
+      status: 'sending',
+      createdAt: 1780575500000 - 120_000,
+      traceId: null,
+    });
+
+    const inserted = persistRemoteMessage(deps, {
+      id: '8003', peerId: 1001, messageId: 8003, role: 'user', text: 'same words',
+      status: 'complete', date: 1780575500, updatedAt: 1, cursor: 32,
+    });
+
+    expect(inserted?.clientMessageId).toBe('8003');
+    expect(deps.messagesRepo.listByBuddy('1001')).toHaveLength(3);
+    deps.db.close();
+  });
+
+  it('double-send of identical text adopts echoes oldest-first', () => {
+    const deps = openDeps({ tokenOverride: {} });
+    for (const [cmId, createdAt] of [['cm-dup-1', 1780575600100], ['cm-dup-2', 1780575600900]] as const) {
+      deps.messagesRepo.insert({
+        id: null, clientMessageId: cmId, buddyId: '1001', role: 'user',
+        text: 'ok', status: 'sending', createdAt, traceId: null,
+      });
+    }
+
+    const first = persistRemoteMessage(deps, {
+      id: '8004', peerId: 1001, messageId: 8004, role: 'user', text: 'ok',
+      status: 'complete', date: 1780575601, updatedAt: 1, cursor: 33,
+    });
+    const second = persistRemoteMessage(deps, {
+      id: '8005', peerId: 1001, messageId: 8005, role: 'user', text: 'ok',
+      status: 'complete', date: 1780575602, updatedAt: 2, cursor: 34,
+    });
+
+    expect(first?.clientMessageId).toBe('cm-dup-1');
+    expect(second?.clientMessageId).toBe('cm-dup-2');
+    expect(deps.messagesRepo.listByBuddy('1001')).toHaveLength(2);
+    deps.db.close();
+  });
+});
+
+describe('adoptServerId', () => {
+  it('markSent after the echo row landed does not throw and leaves one row', async () => {
+    const deps = openDeps({
+      tokenOverride: {},
+      relaySyncMessageSnapshots: async () => ({ cursor: 0, messages: [] }),
+    });
+    // Simulate: relay echo snapshot arrives BEFORE /send resolves — persisted
+    // as its own row keyed by the server id (no clientTag from an old relay,
+    // and outside the text window so no adoption either).
+    deps.messagesRepo.insert({
+      id: '9001',
+      clientMessageId: '9001',
+      buddyId: '1001',
+      role: 'user',
+      text: 'race me',
+      status: 'sent',
+      createdAt: 1780575700000,
+      traceId: null,
+    });
+    // The optimistic local row for the same logical message.
+    deps.messagesRepo.insert({
+      id: null,
+      clientMessageId: 'cm-race',
+      buddyId: '1001',
+      role: 'user',
+      text: 'race me',
+      status: 'sending',
+      createdAt: 1780575700000,
+      traceId: null,
+    });
+
+    // Regression: updateServerId here used to throw UNIQUE/PK constraint.
+    expect(() => deps.messagesRepo.adoptServerId('cm-race', '9001')).not.toThrow();
+
+    const adopted = deps.messagesRepo.findByServerId('9001');
+    expect(adopted?.clientMessageId).toBe('cm-race');
+    expect(adopted?.status).toBe('sent');
+    expect(deps.messagesRepo.listByBuddy('1001')).toHaveLength(1);
+    deps.db.close();
+  });
+
+  it('is idempotent when the row already carries the server id', () => {
+    const deps = openDeps({ tokenOverride: {} });
+    deps.messagesRepo.insert({
+      id: null, clientMessageId: 'cm-idem', buddyId: '1001', role: 'user',
+      text: 'once', status: 'sending', createdAt: 1780575800000, traceId: null,
+    });
+    deps.messagesRepo.adoptServerId('cm-idem', '9100');
+    expect(() => deps.messagesRepo.adoptServerId('cm-idem', '9100')).not.toThrow();
+    expect(deps.messagesRepo.findByServerId('9100')?.clientMessageId).toBe('cm-idem');
+    expect(deps.messagesRepo.listByBuddy('1001')).toHaveLength(1);
+    deps.db.close();
+  });
 });
 
 describe('persistLocalDisplayMessage', () => {

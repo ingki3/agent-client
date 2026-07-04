@@ -69,6 +69,8 @@ export type RelayMessageSnapshot = {
   media?: { kind: string; name: string; mime: string; size?: number; url: string };
   helperItems?: HelperItem[];
   inlineKeyboard?: InlineKeyboard | null;
+  /** Sent by newer relays on the user's own outgoing echo (see /send clientTag). */
+  clientTag?: string;
 };
 
 export type RelaySnapshotSyncResult = {

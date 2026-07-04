@@ -75,8 +75,8 @@ export async function retryMessage(
       // outbox.message_id has a FOREIGN KEY on messages(id). Remove the queue
       // entry BEFORE updating the messages PK so the FK does not block.
       deps.outboxRepo.remove(stored.clientMessageId);
-      deps.messagesRepo.updateServerId(stored.clientMessageId, serverMessageId);
-      deps.messagesRepo.updateStatus(stored.clientMessageId, 'sent');
+      // adoptServerId: tolerant of the echo row landing first (PK conflict).
+      deps.messagesRepo.adoptServerId(stored.clientMessageId, serverMessageId);
     });
     return {
       kind: 'sent',

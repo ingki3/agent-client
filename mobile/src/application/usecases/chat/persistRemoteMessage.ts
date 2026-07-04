@@ -61,10 +61,48 @@ export function persistRemoteMessage(
     if (existing) {
       result = deps.messagesRepo.mergeRemoteFields(serverId, snapshotRichFields(snapshot)) ?? deps.messagesRepo.findByServerId(serverId);
     } else {
-      result = deps.messagesRepo.insertRemoteIfAbsent(snapshotToPersistedMessage(snapshot));
+      // Our own send echoing back before /send resolved: adopt the optimistic
+      // local row instead of inserting a second bubble. Preferred path is the
+      // relay-stamped clientTag; the text match covers relays without it.
+      const local = findAdoptableLocalMessage(deps, snapshot, buddyId);
+      if (local) {
+        deps.messagesRepo.adoptServerId(local.clientMessageId, serverId);
+        deps.messagesRepo.mergeRemoteFields(serverId, snapshotRichFields(snapshot));
+        result = deps.messagesRepo.findByServerId(serverId);
+      } else {
+        result = deps.messagesRepo.insertRemoteIfAbsent(snapshotToPersistedMessage(snapshot));
+      }
     }
     deps.messageSyncStateRepo.advanceCursor(buddyId, snapshot.cursor, snapshot.updatedAt || Date.now());
   });
 
   return result;
+}
+
+const ECHO_TEXT_MATCH_WINDOW_MS = 60_000;
+
+function findAdoptableLocalMessage(
+  deps: Pick<ChatUseCaseDeps, 'messagesRepo'>,
+  snapshot: RelayMessageSnapshot,
+  buddyId: string,
+): Message | null {
+  if (snapshot.clientTag) {
+    const tagged = deps.messagesRepo.findByClientMessageId(snapshot.clientTag);
+    // Only adopt rows that never got a server id — a row already reconciled by
+    // /send must not be re-pointed at a different message. Persisted local rows
+    // carry id === clientMessageId until reconciliation (insert() falls back to
+    // the client id for the PK), so that counts as "no server id" too.
+    if (tagged && tagged.buddyId === buddyId && (!tagged.id || tagged.id === tagged.clientMessageId)) {
+      return tagged;
+    }
+  }
+  if (snapshot.role !== 'user') return null;
+  // Anchor the window on the echo's Telegram send time, not the wall clock —
+  // the optimistic row was created moments before that same send.
+  return deps.messagesRepo.findPendingUserMessageByText(
+    buddyId,
+    snapshot.text,
+    ECHO_TEXT_MATCH_WINDOW_MS,
+    snapshot.date * 1000,
+  );
 }
