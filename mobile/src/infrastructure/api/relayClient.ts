@@ -10,6 +10,7 @@
  * No-ops (null/empty) when no relay is configured.
  */
 import { Platform } from "react-native";
+import { drainSseBuffer } from "./sseParser";
 import { config } from "../config";
 import { secureStore, SecureKeys } from "../storage/secureStore";
 import { uid } from "@/lib/id";
@@ -79,12 +80,20 @@ export type RelayMessageStreamEvent =
   | { type: "connected"; peerId: number; cursor: number }
   | { type: "message_updated"; message: RelayMessageSnapshot }
   | { type: "helper_updated"; message: RelayMessageSnapshot }
-  | { type: "error"; message: string };
+  | { type: "error"; message: string }
+  // Client-side only (never sent by the relay): the stream is dead and the
+  // consumer should drop its handle so the next poll tick reopens it.
+  | { type: "closed"; reason: "server_end" | "network_error" | "rotated" };
 
 export type RelayStreamHandle = { close: () => void };
 
 const RELAY_REQUEST_TIMEOUT_MS = 15_000;
 const RELAY_TTS_REQUEST_TIMEOUT_MS = 120_000;
+// RN's XHR keeps the full SSE responseText in memory, so long-lived streams are
+// rotated (abort + reopen via the poll tick) past either threshold. Heartbeats
+// every 25s drive onprogress, so the age check needs no dedicated timer.
+const STREAM_ROTATE_BYTES = 512 * 1024;
+const STREAM_ROTATE_MS = 10 * 60_000;
 
 async function withTimeout<T>(
   fn: (signal: AbortSignal) => Promise<T>,
@@ -411,21 +420,27 @@ export const relayClient = {
     const headers = await authHeader();
     const xhr = new XMLHttpRequest();
     let lastIndex = 0;
+    let pending = "";
     let closed = false;
+    let closeEmitted = false;
+    const openedAt = Date.now();
     const url = `${config.relayBase}/messages/stream?deviceId=${encodeURIComponent(id)}&peerId=${peerId}&since=${sinceCursor}`;
     xhr.open("GET", url);
     for (const [key, value] of Object.entries(headers)) xhr.setRequestHeader(key, value);
     xhr.setRequestHeader("Accept", "text/event-stream");
 
+    const emitClosed = (reason: "server_end" | "network_error" | "rotated") => {
+      if (closed || closeEmitted) return;
+      closeEmitted = true;
+      onEvent({ type: "closed", reason });
+    };
+
     const flush = () => {
-      const text = xhr.responseText.slice(lastIndex);
+      pending += xhr.responseText.slice(lastIndex);
       lastIndex = xhr.responseText.length;
-      for (const block of text.split("\n\n")) {
-        if (!block.trim() || block.trim().startsWith(":")) continue;
-        const line = block.split("\n").find((l) => l.startsWith("data:"));
-        if (!line) continue;
-        const raw = line.slice(5).trim();
-        if (!raw) continue;
+      const { events, rest } = drainSseBuffer(pending);
+      pending = rest;
+      for (const raw of events) {
         try {
           const event = JSON.parse(raw) as RelayMessageStreamEvent;
           if ((event.type === "message_updated" || event.type === "helper_updated") && event.message) {
@@ -438,12 +453,25 @@ export const relayClient = {
       }
     };
 
-    xhr.onprogress = flush;
+    xhr.onprogress = () => {
+      if (closed) return;
+      flush();
+      if (xhr.responseText.length > STREAM_ROTATE_BYTES || Date.now() - openedAt > STREAM_ROTATE_MS) {
+        emitClosed("rotated");
+        closed = true;
+        xhr.abort();
+      }
+    };
     xhr.onload = () => {
-      if (!closed) flush();
+      if (closed) return;
+      flush();
+      emitClosed("server_end");
     };
     xhr.onerror = () => {
-      if (!closed) onEvent({ type: "error", message: "stream_error" });
+      emitClosed("network_error");
+    };
+    xhr.ontimeout = () => {
+      emitClosed("network_error");
     };
     xhr.send();
 

@@ -366,7 +366,19 @@ function startRelayStream(buddyId: BuddyId, sinceCursor: number): void {
   const peerId = Number(buddyId);
   if (!Number.isFinite(peerId)) return;
   pendingStreams.add(buddyId);
+  // Set when the stream dies before openMessageStream resolves, so the .then
+  // below never registers (and closes) an already-dead handle.
+  let dead = false;
   void relayClient.openMessageStream(peerId, sinceCursor, (event) => {
+    if (event.type === 'closed') {
+      // Stream died (server end / network error / rotation). Drop the handle so
+      // the next poll tick (≤7s) reopens it at the current cursor; the relay
+      // replays a snapshot backlog on reconnect and persistRemoteMessage
+      // de-dupes, so nothing is lost in the gap.
+      dead = true;
+      stopRelayStream(buddyId);
+      return;
+    }
     if (event.type !== 'message_updated' && event.type !== 'helper_updated') return;
     // Persist + surface BOTH directions: agent replies and the user's own
     // messages sent from another Telegram client (role === 'user'). The old
@@ -382,7 +394,7 @@ function startRelayStream(buddyId: BuddyId, sinceCursor: number): void {
   }).then((handle) => {
     pendingStreams.delete(buddyId);
     if (!handle) return;
-    if (!activePolls[buddyId]) {
+    if (dead || !activePolls[buddyId]) {
       handle.close();
       return;
     }
