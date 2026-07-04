@@ -1,6 +1,7 @@
 import { config } from "./config.js";
 import { createRelayApp } from "./http/app.js";
 import { registerAuthRoutes } from "./http/routes/auth.js";
+import { registerFcmDebugRoutes } from "./http/routes/fcmDebug.js";
 import { registerLinkPreviewRoutes } from "./http/routes/linkPreview.js";
 import { registerMediaRoutes } from "./http/routes/media.js";
 import { registerMessageRoutes } from "./http/routes/messages.js";
@@ -42,6 +43,7 @@ registerAuthRoutes(app);
 registerPeerRoutes(app);
 registerMessageRoutes(app);
 registerMediaRoutes(app);
+registerFcmDebugRoutes(app);
 
 async function main() {
   if (config.isDevKey) {

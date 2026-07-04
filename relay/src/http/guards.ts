@@ -8,6 +8,7 @@
  */
 import type { FastifyReply, FastifyRequest } from "fastify";
 
+import { config } from "../config.js";
 import { authDevice } from "./authDevice.js";
 
 export function replyError(
@@ -21,6 +22,21 @@ export function replyError(
 
 export function requireDeviceAuth(req: FastifyRequest, deviceId: string, reply: FastifyReply): boolean {
   if (!authDevice(req, deviceId)) {
+    void replyError(reply, 401, "unauthorized");
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Guard admin/dev endpoints (debug pings, MCP-token minting) with the relay
+ * master key via `Authorization: Bearer <RELAY_MASTER_KEY>`. Disabled entirely
+ * when no master key is configured (dev-key mode) to avoid a false sense of auth.
+ */
+export function requireMasterKey(req: FastifyRequest, reply: FastifyReply): boolean {
+  const header = String(req.headers["authorization"] ?? "");
+  const provided = header.startsWith("Bearer ") ? header.slice(7) : "";
+  if (!config.masterKeyRaw || provided !== config.masterKeyRaw) {
     void replyError(reply, 401, "unauthorized");
     return false;
   }

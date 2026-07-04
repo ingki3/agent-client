@@ -29,6 +29,7 @@ export function registerSystemRoutes(app: FastifyInstance) {
       secretHash,
       expoPushToken: body.expoPushToken ?? "",
       platform: body.platform === "android" ? "android" : "ios",
+      fcmToken: typeof body.fcmToken === "string" && body.fcmToken ? body.fcmToken : null,
     });
 
     const registered: string[] = [];
@@ -41,7 +42,7 @@ export function registerSystemRoutes(app: FastifyInstance) {
 
     reconcileLoops();
     log.info(
-      `register device=${body.deviceId} platform=${body.platform === "android" ? "android" : "ios"} bots=${registered.length} push_token_len=${(body.expoPushToken ?? "").length}`,
+      `register device=${body.deviceId} platform=${body.platform === "android" ? "android" : "ios"} bots=${registered.length} push_token_len=${(body.expoPushToken ?? "").length} fcm=${body.fcmToken ? "yes" : "no"}`,
     );
     return reply.send({ ok: true, ...(secret ? { deviceSecret: secret } : {}), registered });
   });
