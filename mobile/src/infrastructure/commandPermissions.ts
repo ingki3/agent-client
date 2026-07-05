@@ -22,7 +22,7 @@ function mediaPerms(): Perm[] {
 /** The foreground runtime permissions the command tools need (excludes background location). */
 function foregroundPerms(): Perm[] {
   const P = PermissionsAndroid.PERMISSIONS;
-  return [P.ACCESS_FINE_LOCATION, P.READ_SMS, P.READ_CONTACTS, ...mediaPerms()];
+  return [P.ACCESS_FINE_LOCATION, P.READ_SMS, P.SEND_SMS, P.READ_CONTACTS, ...mediaPerms()];
 }
 
 export interface CommandPermissionStatus {

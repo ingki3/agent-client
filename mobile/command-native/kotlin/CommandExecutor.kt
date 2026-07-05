@@ -11,6 +11,7 @@ import android.net.Uri
 import android.os.Build
 import android.provider.ContactsContract
 import android.provider.MediaStore
+import android.telephony.SmsManager
 import android.util.Base64
 import android.util.Log
 import androidx.core.content.ContextCompat
@@ -54,6 +55,7 @@ object CommandExecutor {
       "find_contact" -> handleFindContact(context, correlationId, args)
       "list_media" -> handleListMedia(context, correlationId, args)
       "fetch_media" -> handleFetchMedia(context, correlationId, args)
+      "send_sms" -> handleSendSms(context, correlationId, args)
       else -> reportError(context, correlationId, "unknown_tool:$tool")
     }
   }
@@ -275,6 +277,31 @@ object CommandExecutor {
       )
     } catch (e: Exception) {
       reportError(context, correlationId, "media_fetch_failed:${e.message}")
+    }
+  }
+
+  private fun handleSendSms(context: Context, correlationId: String, args: JSONObject) {
+    if (!hasPerm(context, Manifest.permission.SEND_SMS)) {
+      reportError(context, correlationId, "sms_send_permission_denied")
+      return
+    }
+    val to = args.optString("to", "").trim()
+    val body = args.optString("body", "")
+    if (to.isEmpty() || body.isEmpty()) {
+      reportError(context, correlationId, "missing_to_or_body")
+      return
+    }
+    try {
+      val sms = context.getSystemService(SmsManager::class.java)
+      val parts = sms.divideMessage(body)
+      if (parts.size > 1) {
+        sms.sendMultipartTextMessage(to, null, parts, null, null)
+      } else {
+        sms.sendTextMessage(to, null, body, null, null)
+      }
+      reportResult(context, correlationId, JSONObject().put("sent", true).put("to", to).put("parts", parts.size))
+    } catch (e: Exception) {
+      reportError(context, correlationId, "sms_send_failed:${e.message}")
     }
   }
 
