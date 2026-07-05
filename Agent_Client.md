@@ -422,3 +422,55 @@ When relay protocol changes:
 - Received media proxy has basic caching headers, but no persistent media cache.
 - Long Telegram history backfill is limited to the current sync path and should be expanded carefully if needed.
 - Legacy Bot API paths remain for compatibility, but the main product path is MTProto user-account relay.
+
+## 16. Phone-command pipe (MCP)
+
+The relay is also an MCP server exposing phone-control tools. An MCP-capable
+Telegram bot calls a tool; the relay wakes the user's phone via a silent FCM
+data message; the phone executes natively (even backgrounded/killed) and returns
+the result. Full integration guide: `relay/MCP.md`.
+
+- Flow: MCP client → `POST/GET /mcp` (Streamable HTTP) → `commands/dispatcher`
+  (correlationId + pending promise, bounded timeout) → `fcm/fcmSender` (FCM v1
+  data message, high priority) → phone → `POST /command/result` → tool result.
+- Wake channel: FCM v1 **data-only** message (not Expo push). Requires
+  `FCM_SERVICE_ACCOUNT_JSON` + `FCM_PROJECT_ID` in relay env; the phone registers
+  its raw FCM token on `/register` (`devices.fcm_token`).
+- Phone executor: native Kotlin under
+  `mobile/android/app/src/main/java/dev/simplist/agentclient/mockup/command/`.
+  `CommandMessagingService` extends Expo's `ExpoFirebaseMessagingService` and
+  intercepts only messages with a `tool` data key (chat push is untouched).
+  `CommandStore` mirrors relay creds into EncryptedSharedPreferences (native
+  can't read JS SecureStore); `CommandExecutor` runs each tool; `RelayClient`
+  posts the result back. **This native code lives in gitignored `android/`**;
+  the source of truth is `mobile/command-native/` (convert to a local Expo
+  module for prebuild safety).
+- Tools: `get_location`, `read_sms`, `find_contact`, `list_media`, `fetch_media`
+  (SENSE); `send_sms`, `send_media` (ACTION). `send_media` is two-hop — the phone
+  supplies bytes via `fetch_media`, the relay sends via `mtproto.sendMediaAs`.
+- Auth/safety: MCP token minted by `relay/scripts/mint-mcp-token.ts`, bound to a
+  `deviceId`+`peerId` (`mcp_clients`). Every tool call is audited in
+  `mcp_tool_calls`. Writes are irreversible (own SIM / Telegram identity) — the
+  bot should confirm in chat before calling; `MCP_REQUIRE_CONFIRM_TOKEN` is an
+  optional relay-side gate.
+- Limitation: Android does NOT deliver FCM to a **force-stopped** app until the
+  user reopens it once. Normal background/swipe/kill/Doze all wake fine.
+
+## 17. Chat display fixes (message ordering / recency / scroll)
+
+Three chat bugs surfaced while restoring recent messages:
+
+- **Frozen at oldest 200**: `messages-repo.listByBuddy` used `ORDER BY
+  created_at ASC LIMIT 200` (the OLDEST 200), so past 200 messages the chat froze
+  at the 200th. Now returns the most-recent 200.
+- **Cursor drift**: `persistRemoteMessage` advances the sync cursor per message,
+  and the monotonic cursor never rewinds — a live/streaming event can leapfrog
+  earlier messages, stranding them on the server. Self-heal: `POST
+  /messages/recent` returns recent snapshots regardless of cursor;
+  `backfillRecentMessagesFlow` runs on chat entry to reconcile.
+- **Wrong utterance order / unreachable newest**: `createdAt` is second-precision
+  so same-second messages tied — `selectVisibleMessages` now applies
+  `sortConversationChronology` (createdAt, then numeric server id) so a reply
+  never sorts above its question. `useChatAutoScroll` uses
+  `scrollToIndex(last, viewPosition: 1)` instead of `scrollToEnd` to land at the
+  true bottom with variable-height rows.
