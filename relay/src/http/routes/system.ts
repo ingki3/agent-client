@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { hashSecret, newSecret } from "../../crypto.js";
 import { log } from "../../log.js";
+import { pendingCommandCount } from "../../commands/dispatcher.js";
 import { loopCount, reconcileLoops } from "../../poller.js";
 import { store } from "../../store.js";
 import type { RegisterBody } from "../../types.js";
@@ -75,6 +76,6 @@ export function registerSystemRoutes(app: FastifyInstance) {
   });
 
   app.get("/health", async () => {
-    return { ok: true, loops: loopCount(), ...store.healthSnapshot() };
+    return { ok: true, loops: loopCount(), pendingCommands: pendingCommandCount(), ...store.healthSnapshot() };
   });
 }
