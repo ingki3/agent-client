@@ -58,7 +58,6 @@ export function registerMessageRoutes(app: FastifyInstance) {
       const limit = Number.isFinite(body.limit) ? Math.min(body.limit!, 100) : 50;
       const messages = store.listRecentMessageSnapshots(body.peerId!, limit);
       const cursor = messages.length ? messages[messages.length - 1]!.cursor + 1 : 0;
-      log.info(`messages recent device=${body.deviceId} peer=${body.peerId} returned=${messages.length}`);
       return reply.send({ ok: true, messages, cursor });
     } catch (e) {
       return mtprotoErr(reply, e);

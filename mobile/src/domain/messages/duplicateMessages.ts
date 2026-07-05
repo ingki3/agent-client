@@ -41,13 +41,30 @@ export function filterLikelyDuplicateMessages(messages: Message[]): Message[] {
 }
 
 /**
+ * Chronological order for display. createdAt is Telegram's second-precision
+ * date, so same-second messages (e.g. a user question and the agent's instant
+ * reply) tie — break the tie by the numeric server message id so a reply never
+ * sorts above the message it answers.
+ */
+export function sortConversationChronology(messages: Message[]): Message[] {
+  return [...messages].sort((a, b) => {
+    if (a.createdAt !== b.createdAt) return a.createdAt - b.createdAt;
+    const aId = Number(a.id ?? a.clientMessageId);
+    const bId = Number(b.id ?? b.clientMessageId);
+    if (Number.isFinite(aId) && Number.isFinite(bId) && aId !== bId) return aId - bId;
+    return a.clientMessageId.localeCompare(b.clientMessageId);
+  });
+}
+
+/**
  * The single visibility rule for a conversation: hidden helper-submit context
- * messages removed, likely duplicates collapsed. Used by both the hydrate path
- * (listMessages) and the live path (receiveUpdates) so a room never changes
- * contents on re-entry.
+ * messages removed, likely duplicates collapsed, chronologically ordered. Used
+ * by both the hydrate path (listMessages) and the live path (receiveUpdates) so
+ * a room never changes contents or order on re-entry.
  */
 export function selectVisibleMessages(messages: Message[]): Message[] {
-  return filterLikelyDuplicateMessages(
+  const visible = filterLikelyDuplicateMessages(
     messages.filter((message) => !isHiddenHelperSubmitMessage(message)),
   );
+  return sortConversationChronology(visible);
 }
