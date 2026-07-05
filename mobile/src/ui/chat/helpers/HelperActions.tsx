@@ -3,19 +3,18 @@
  * items below the bubble and owns the per-item submit lifecycle (optimistic
  * local echo + relay submit + de-dupe).
  */
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import { ScrollView, View } from 'react-native';
 
 import { useChatStore } from '@/application/stores/chat-store';
 import type { Message , HelperItem } from '@/domain/entities/Message';
-import { relayClient } from '@/infrastructure/api/relayClient';
 import { space } from '@/ui/theme/tokens';
 
-import { appendLocalDisplayMessageFlow } from '../../../../app/_runtime/chat';
+import { appendLocalDisplayMessageFlow, sendMessageFlow } from '../../../../app/_runtime/chat';
 
 import { ArtifactHelper } from './ArtifactHelper';
 import { ConfirmHelper } from './ConfirmHelper';
-import { displayActionValue, helperSource } from './context';
+import { displayActionValue } from './context';
 import { InputFormHelper } from './InputFormHelper';
 import { HelperChip } from './primitives';
 import { SelectHelper } from './SelectHelper';
@@ -45,12 +44,6 @@ export function HelperActions({ message }: { message: Message }) {
 
 function HelperItemCard({ item, message }: { item: HelperItem; message: Message }) {
   const appendMessage = useChatStore((s) => s.appendMessage);
-  const ids = useChatStore((s) => s.byBuddy[message.buddyId] ?? []);
-  const messagesById = useChatStore((s) => s.messages);
-  const timeline = useMemo(
-    () => ids.map((id) => messagesById[id]).filter((m): m is Message => !!m),
-    [ids, messagesById],
-  );
   const [done, setDone] = useState<Record<string, boolean>>({});
 
   const appendLocal = (text: string, role: Message['role']) => {
@@ -72,22 +65,19 @@ function HelperItemCard({ item, message }: { item: HelperItem; message: Message 
 
   const send = async (key: string, payload: HelperActionPayload) => {
     if (done[key]) return;
-    const peerId = Number(message.buddyId);
-    if (!Number.isFinite(peerId)) {
+    if (!Number.isFinite(Number(message.buddyId))) {
       appendLocal('후속 액션을 보낼 대상 agent 연결을 찾지 못했습니다.', 'system');
       return;
     }
+    const text = displayActionValue(payload).trim();
+    if (!text) return;
     setDone((prev) => ({ ...prev, [key]: true }));
-    appendLocal(displayActionValue(payload), 'user');
-    const ok = await relayClient.submitHelperAction(peerId, {
-      helperItemId: item.id,
-      helperType: item.type,
-      ...payload,
-      source: helperSource(message, timeline),
-    });
-    if (!ok) {
+    // Send the selection as a plain conversational message — the agent already
+    // holds the conversation context, so no JSON/source wrapper is needed. Reuses
+    // the normal send path (optimistic bubble + echo reconcile, no duplicate).
+    const outcome = await sendMessageFlow(message.buddyId, text);
+    if (outcome.kind === 'failed') {
       setDone((prev) => ({ ...prev, [key]: false }));
-      appendLocal('후속 액션 전송에 실패했습니다. 네트워크 또는 relay 연결을 확인해 주세요.', 'system');
     }
   };
 
