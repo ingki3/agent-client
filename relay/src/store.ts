@@ -375,6 +375,18 @@ export const store = {
     });
   },
 
+  /**
+   * The most recent `limit` snapshots for a peer, regardless of cursor. Used by
+   * the app to self-heal its display when the sync cursor has drifted ahead of
+   * un-received messages (returned oldest-first).
+   */
+  listRecentMessageSnapshots(peerId: number, limit = 50): NormalizedMessage[] {
+    const rows = db
+      .prepare("SELECT payload_json FROM message_snapshots WHERE peer_id=? ORDER BY cursor DESC LIMIT ?")
+      .all(peerId, limit) as { payload_json: string }[];
+    return rows.map((r) => parsePayload<NormalizedMessage>(r)).reverse();
+  },
+
   listMessageSnapshots(peerId: number, sinceCursor = 0, limit = 100, opts: { legacyCursorFallback?: boolean } = {}): NormalizedMessage[] {
     const max = db
       .prepare("SELECT COALESCE(MAX(cursor), 0) AS cursor FROM message_snapshots WHERE peer_id=?")

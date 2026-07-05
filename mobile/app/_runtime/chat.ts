@@ -136,6 +136,35 @@ export function hydrateChatScreen(buddyId: BuddyId): Message[] {
   return history;
 }
 
+/**
+ * Self-heal on chat entry: fetch the relay's most recent snapshots regardless of
+ * the local sync cursor, persist any we're missing, and re-hydrate the display.
+ * Recovers messages stranded when the sync cursor drifted ahead of them (a live
+ * stream event / streaming-message cursor bump can leapfrog earlier messages,
+ * and the monotonic cursor never rewinds to re-fetch them).
+ */
+export async function backfillRecentMessagesFlow(buddyId: BuddyId): Promise<void> {
+  const deps = getDeps();
+  const peerId = Number(buddyId);
+  if (!Number.isFinite(peerId)) return;
+  const snapshots = await relayClient.fetchRecentMessages(peerId, 50);
+  let inserted = 0;
+  for (const snapshot of snapshots) {
+    if (String(snapshot.peerId) !== buddyId) continue;
+    try {
+      const persisted = persistRemoteMessage(deps, snapshot);
+      if (persisted) {
+        useChatStore.getState().appendMessage(persisted);
+        inserted += 1;
+      }
+    } catch {
+      // best-effort; skip a snapshot that fails to persist
+    }
+  }
+  // Rebuild the ordered view from SQLite so backfilled messages land in order.
+  if (inserted > 0) hydrateChatScreen(buddyId);
+}
+
 export function markBuddyRead(buddyId: BuddyId): void {
   // Called on every stream event — skip the SQLite write when the store
   // already shows the buddy as read. Falls through when the buddy is not

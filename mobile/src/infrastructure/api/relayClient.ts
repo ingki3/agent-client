@@ -400,6 +400,17 @@ export const relayClient = {
     return normalizeRelayUpdates(body.updates as TgUpdate[]);
   },
 
+  /** Self-heal: the most recent snapshots regardless of sync cursor. Used on chat
+   *  entry to reconcile the display when the cursor drifted ahead of messages. */
+  async fetchRecentMessages(peerId: number, limit = 50): Promise<RelayMessageSnapshot[]> {
+    if (!config.relayBase || !Number.isFinite(peerId)) return [];
+    const id = await secureStore.get(SecureKeys.deviceId);
+    if (!id) return [];
+    const body = await postJson("/messages/recent", { deviceId: id, peerId, limit });
+    if (!body?.ok || !Array.isArray(body.messages)) return [];
+    return normalizeRelaySnapshots(body.messages as RelayMessageSnapshot[]);
+  },
+
   async syncMessageSnapshots(peerId: number, sinceCursor = 0, limit = 50): Promise<RelaySnapshotSyncResult> {
     if (!config.relayBase || !Number.isFinite(peerId)) return { messages: [], cursor: sinceCursor };
     const id = await secureStore.get(SecureKeys.deviceId);

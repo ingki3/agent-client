@@ -37,6 +37,7 @@ import { useTheme } from '@/ui/theme/ThemeProvider';
 import { fontSize, radius, space, touch } from '@/ui/theme/tokens';
 
 import {
+  backfillRecentMessagesFlow,
   deleteMessageFlow,
   hydrateChatScreen,
   initChatRuntime,
@@ -90,6 +91,8 @@ export default function ChatScreen() {
     hydrateChatScreen(buddyId);
     markBuddyRead(buddyId);
     scrollToLatest(false);
+    // Self-heal any messages stranded by cursor drift (fire-and-forget).
+    void backfillRecentMessagesFlow(buddyId);
     const stop = startPolling(buddyId);
     return () => stop();
   }, [buddyId, scrollToLatest]);
