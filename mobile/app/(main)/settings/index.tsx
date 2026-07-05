@@ -12,6 +12,7 @@ import { useNotificationsStore } from "@/application/stores/notifications";
 import { signOut } from "@/application/usecases/session";
 import { config, defaultRelayBase, normalizeApiBase, pushEnabled, saveRelayBaseOverride } from "@/infrastructure/config";
 import { relayClient } from "@/infrastructure/api/relayClient";
+import { commandPermissions, type CommandPermissionStatus } from "@/infrastructure/commandPermissions";
 
 export default function SettingsScreen() {
   const { color } = useTheme();
@@ -23,10 +24,29 @@ export default function SettingsScreen() {
   const [confirm, setConfirm] = useState(false);
   const [relayBase, setRelayBase] = useState(config.relayBase ?? "");
   const [relayStatus, setRelayStatus] = useState<"idle" | "checking" | "ok" | "failed">("idle");
+  const [permStatus, setPermStatus] = useState<CommandPermissionStatus | null>(null);
 
   useEffect(() => {
     setRelayBase(config.relayBase ?? "");
+    if (commandPermissions.supported()) void commandPermissions.status().then(setPermStatus);
   }, []);
+
+  const requestCommandPerms = async () => {
+    const next = await commandPermissions.requestAll();
+    setPermStatus(next);
+    if (next.granted < next.total || !next.backgroundLocation) {
+      Alert.alert(
+        "권한 일부 미허용",
+        "에이전트가 폰을 제어하려면 위치(항상 허용)·문자·연락처·미디어 권한이 필요합니다. 시스템 설정에서 직접 허용해 주세요.",
+      );
+    }
+  };
+
+  const permLabel = !permStatus
+    ? "에이전트 폰 제어 권한"
+    : permStatus.granted === permStatus.total && permStatus.backgroundLocation
+      ? "에이전트 폰 제어 권한 (모두 허용됨)"
+      : `에이전트 폰 제어 권한 (${permStatus.granted}/${permStatus.total}${permStatus.backgroundLocation ? " · 위치 항상" : ""})`;
 
   const notifLabel =
     permission === "granted" ? "알림 켜짐" : permission === "denied" ? "알림 꺼짐 (설정에서 허용)" : "알림 켜기";
@@ -163,6 +183,12 @@ export default function SettingsScreen() {
         {pushEnabled() ? (
           <>
             <Row label={notifLabel} onPress={() => void enableNotifications()} />
+            <View style={{ height: 1, backgroundColor: color("border"), marginLeft: space[5] }} />
+          </>
+        ) : null}
+        {commandPermissions.supported() ? (
+          <>
+            <Row label={permLabel} onPress={() => void requestCommandPerms()} />
             <View style={{ height: 1, backgroundColor: color("border"), marginLeft: space[5] }} />
           </>
         ) : null}
