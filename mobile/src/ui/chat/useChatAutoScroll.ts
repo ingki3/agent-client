@@ -9,6 +9,8 @@ export function useChatAutoScroll(messages: Message[]) {
   const scrollRetryTimers = useRef<ReturnType<typeof setTimeout>[]>([]);
   const nearBottomRef = useRef(true);
   const prevMessageCountRef = useRef(0);
+  const countRef = useRef(0);
+  countRef.current = messages.length;
 
   const clearTimers = useCallback(() => {
     for (const timer of scrollRetryTimers.current) clearTimeout(timer);
@@ -18,13 +20,27 @@ export function useChatAutoScroll(messages: Message[]) {
   const scrollToLatest = useCallback(
     (animated: boolean) => {
       clearTimers();
-      requestAnimationFrame(() => {
-        listRef.current?.scrollToEnd({ animated });
-        scrollRetryTimers.current = [
-          setTimeout(() => listRef.current?.scrollToEnd({ animated }), 80),
-          setTimeout(() => listRef.current?.scrollToEnd({ animated }), 240),
-        ];
-      });
+      // scrollToIndex(last), not scrollToEnd: with variable-height rows,
+      // scrollToEnd lands short of the true bottom (it targets the end of
+      // already-measured content), leaving the newest messages after a tall
+      // message unreachable. scrollToIndex forces measurement up to the item.
+      const go = () => {
+        const last = countRef.current - 1;
+        if (last < 0) return;
+        try {
+          // viewPosition 1 aligns the last item's bottom to the viewport bottom
+          // (the true end of the conversation, even for a tall final message).
+          listRef.current?.scrollToIndex({ index: last, animated, viewPosition: 1 });
+        } catch {
+          listRef.current?.scrollToEnd({ animated });
+        }
+      };
+      requestAnimationFrame(go);
+      scrollRetryTimers.current = [
+        setTimeout(go, 120),
+        setTimeout(go, 350),
+        setTimeout(go, 700),
+      ];
     },
     [clearTimers],
   );

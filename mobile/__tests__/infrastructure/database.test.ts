@@ -161,6 +161,25 @@ describe('Repository round-trips', () => {
     db.close();
   });
 
+  it('listByBuddy returns the MOST RECENT messages (not the oldest) when over the limit', () => {
+    const db = openMigratedDb();
+    new BuddiesRepository(db).upsert({
+      id: 'b1', username: 'u', displayName: 'U', iconUrl: null, traceSupported: false,
+      lastMessagePreview: null, lastMessageAt: null, unreadCount: 0, createdAt: 1,
+    });
+    const repo = new MessagesRepository(db);
+    for (let i = 1; i <= 10; i += 1) {
+      repo.insert({
+        id: `srv-${i}`, clientMessageId: `cm-${i}`, buddyId: 'b1', role: 'agent',
+        text: `m${i}`, status: 'sent', createdAt: i * 1000, traceId: null,
+      });
+    }
+    const recent = repo.listByBuddy('b1', 3);
+    // The 3 newest, oldest-first for display.
+    expect(recent.map((m) => m.text)).toEqual(['m8', 'm9', 'm10']);
+    db.close();
+  });
+
   it('trace blob round-trip preserves nodes', () => {
     const db = openMigratedDb();
     new BuddiesRepository(db).upsert({

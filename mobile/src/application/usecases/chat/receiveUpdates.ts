@@ -11,7 +11,7 @@
  */
 import type { BuddyId } from '@/domain/entities/Buddy';
 import type { Message } from '@/domain/entities/Message';
-import { selectVisibleMessages } from '@/domain/messages/duplicateMessages';
+import { selectVisibleMessages, sortConversationChronology } from '@/domain/messages/duplicateMessages';
 import { isHiddenHelperSubmitMessage } from '@/domain/messages/hiddenMessages';
 
 import { persistRemoteMessage } from './persistRemoteMessage';
@@ -118,16 +118,6 @@ export async function receiveUpdates(
   });
 
   return { newOffset, inserted: visibleInserted(deps, buddy.id, inserted), typing };
-}
-
-function sortConversationChronology(messages: Message[]): Message[] {
-  return [...messages].sort((a, b) => {
-    if (a.createdAt !== b.createdAt) return a.createdAt - b.createdAt;
-    const aId = Number(a.id ?? a.clientMessageId);
-    const bId = Number(b.id ?? b.clientMessageId);
-    if (Number.isFinite(aId) && Number.isFinite(bId) && aId !== bId) return aId - bId;
-    return a.clientMessageId.localeCompare(b.clientMessageId);
-  });
 }
 
 async function receiveSnapshotSync(

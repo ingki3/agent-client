@@ -85,6 +85,8 @@ export type RegisterBody = {
   platform: "ios" | "android";
   gateway: string;
   bots: RegisterBot[];
+  /** Raw FCM device token — the wake channel for the phone-command pipe. */
+  fcmToken?: string;
 };
 
 // ─── MTProto (user-account) request bodies ───────────────────────────────────

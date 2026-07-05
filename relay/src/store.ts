@@ -86,12 +86,50 @@ ensureColumn("peers", "created_at", "created_at INTEGER NOT NULL DEFAULT 0");
 ensureColumn("peers", "last_used_at", "last_used_at INTEGER NOT NULL DEFAULT 0");
 db.exec("CREATE INDEX IF NOT EXISTS idx_peers_owner ON peers(owner_tg_user_id, peer_id)");
 
+// Raw FCM device token — the wake channel for the phone-command pipe (separate
+// from expo_push_token, which drives user-visible chat notifications).
+ensureColumn("devices", "fcm_token", "fcm_token TEXT");
+
+// MCP client credentials (the reasoning bot). token_hash → which phone (device)
+// + which Telegram peer a tool call targets, resolved from the session alone.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS mcp_clients (
+    token_hash TEXT PRIMARY KEY,
+    device_id TEXT NOT NULL,
+    peer_id INTEGER NOT NULL,
+    label TEXT,
+    created_at INTEGER NOT NULL
+  );
+  -- Audit + durable state for every dispatched phone command.
+  CREATE TABLE IF NOT EXISTS mcp_tool_calls (
+    correlation_id TEXT PRIMARY KEY,
+    device_id TEXT NOT NULL,
+    peer_id INTEGER NOT NULL,
+    tool TEXT NOT NULL,
+    args_json TEXT NOT NULL,
+    status TEXT NOT NULL,            -- pending | done | error | timeout
+    result_json TEXT,
+    created_at INTEGER NOT NULL,
+    resolved_at INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS idx_mcp_tool_calls_created ON mcp_tool_calls(created_at);
+`);
+
 export type DeviceRow = {
   device_id: string;
   device_secret_hash: string;
   expo_push_token: string;
   platform: string;
+  fcm_token: string | null;
 };
+export type McpClientRow = {
+  token_hash: string;
+  device_id: string;
+  peer_id: number;
+  label: string | null;
+  created_at: number;
+};
+export type ToolCallStatus = "pending" | "done" | "error" | "timeout";
 export type BotRow = {
   bot_id: number;
   gateway: string;
@@ -156,17 +194,58 @@ function comparableSnapshot(message: NormalizedMessage): Omit<NormalizedMessage,
 }
 
 export const store = {
-  upsertDevice(d: { deviceId: string; secretHash: string; expoPushToken: string; platform: string }) {
+  upsertDevice(d: { deviceId: string; secretHash: string; expoPushToken: string; platform: string; fcmToken?: string | null }) {
     const now = Date.now();
+    // fcmToken is optional per call: COALESCE keeps a previously-registered token
+    // when a later /register omits it (e.g. an older app build).
     db.prepare(
-      `INSERT INTO devices (device_id, device_secret_hash, expo_push_token, platform, created_at, last_seen_at)
-       VALUES (@id, @hash, @tok, @plat, @now, @now)
-       ON CONFLICT(device_id) DO UPDATE SET expo_push_token=@tok, platform=@plat, last_seen_at=@now`,
-    ).run({ id: d.deviceId, hash: d.secretHash, tok: d.expoPushToken, plat: d.platform, now });
+      `INSERT INTO devices (device_id, device_secret_hash, expo_push_token, platform, fcm_token, created_at, last_seen_at)
+       VALUES (@id, @hash, @tok, @plat, @fcm, @now, @now)
+       ON CONFLICT(device_id) DO UPDATE SET
+         expo_push_token=@tok, platform=@plat,
+         fcm_token=COALESCE(@fcm, devices.fcm_token),
+         last_seen_at=@now`,
+    ).run({ id: d.deviceId, hash: d.secretHash, tok: d.expoPushToken, plat: d.platform, fcm: d.fcmToken ?? null, now });
   },
 
   getDevice(deviceId: string): DeviceRow | undefined {
     return db.prepare("SELECT * FROM devices WHERE device_id = ?").get(deviceId) as DeviceRow | undefined;
+  },
+
+  // ─── MCP command pipe ──────────────────────────────────────────────────────
+  getMcpClientByTokenHash(tokenHash: string): McpClientRow | undefined {
+    return db.prepare("SELECT * FROM mcp_clients WHERE token_hash = ?").get(tokenHash) as McpClientRow | undefined;
+  },
+
+  insertMcpClient(c: { tokenHash: string; deviceId: string; peerId: number; label?: string }) {
+    db.prepare(
+      `INSERT INTO mcp_clients (token_hash, device_id, peer_id, label, created_at)
+       VALUES (@h, @d, @p, @l, @now)
+       ON CONFLICT(token_hash) DO UPDATE SET device_id=@d, peer_id=@p, label=@l`,
+    ).run({ h: c.tokenHash, d: c.deviceId, p: c.peerId, l: c.label ?? null, now: Date.now() });
+  },
+
+  insertToolCall(c: { correlationId: string; deviceId: string; peerId: number; tool: string; argsJson: string }) {
+    db.prepare(
+      `INSERT INTO mcp_tool_calls (correlation_id, device_id, peer_id, tool, args_json, status, created_at)
+       VALUES (@c, @d, @p, @t, @a, 'pending', @now)`,
+    ).run({ c: c.correlationId, d: c.deviceId, p: c.peerId, t: c.tool, a: c.argsJson, now: Date.now() });
+  },
+
+  finishToolCall(correlationId: string, status: ToolCallStatus, resultJson: string | null) {
+    db.prepare(
+      `UPDATE mcp_tool_calls SET status=?, result_json=?, resolved_at=? WHERE correlation_id=? AND status='pending'`,
+    ).run(status, resultJson, Date.now(), correlationId);
+  },
+
+  getToolCall(correlationId: string): { device_id: string; status: string } | undefined {
+    return db.prepare("SELECT device_id, status FROM mcp_tool_calls WHERE correlation_id = ?").get(correlationId) as
+      | { device_id: string; status: string }
+      | undefined;
+  },
+
+  pendingToolCallCount(): number {
+    return (db.prepare("SELECT COUNT(*) AS n FROM mcp_tool_calls WHERE status='pending'").get() as { n: number }).n;
   },
 
   upsertBot(b: { botId: number; gateway: string; botToken: string }) {
@@ -294,6 +373,18 @@ export const store = {
       helperItems,
       status: "complete",
     });
+  },
+
+  /**
+   * The most recent `limit` snapshots for a peer, regardless of cursor. Used by
+   * the app to self-heal its display when the sync cursor has drifted ahead of
+   * un-received messages (returned oldest-first).
+   */
+  listRecentMessageSnapshots(peerId: number, limit = 50): NormalizedMessage[] {
+    const rows = db
+      .prepare("SELECT payload_json FROM message_snapshots WHERE peer_id=? ORDER BY cursor DESC LIMIT ?")
+      .all(peerId, limit) as { payload_json: string }[];
+    return rows.map((r) => parsePayload<NormalizedMessage>(r)).reverse();
   },
 
   listMessageSnapshots(peerId: number, sinceCursor = 0, limit = 100, opts: { legacyCursorFallback?: boolean } = {}): NormalizedMessage[] {

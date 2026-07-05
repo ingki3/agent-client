@@ -208,18 +208,19 @@ export const relayClient = {
     return !!body?.ok;
   },
 
-  /** Register device + peers/bots. Persists the returned deviceSecret on first call. */
-  async register(expoPushToken: string, bots: RelayBot[]): Promise<boolean> {
+  /** Register device + peers/bots. Persists the returned deviceSecret on first call.
+   *  `fcmToken` (raw FCM device token) is the wake channel for the phone-command pipe. */
+  async register(expoPushToken: string, bots: RelayBot[], fcmToken?: string): Promise<boolean> {
     if (!config.relayBase || bots.length === 0) return false;
     const id = await deviceId();
     try {
       console.log(
-        `[relay] register start device=${id} platform=${Platform.OS} bots=${bots.length} token_len=${expoPushToken.length}`,
+        `[relay] register start device=${id} platform=${Platform.OS} bots=${bots.length} token_len=${expoPushToken.length} fcm=${fcmToken ? "yes" : "no"}`,
       );
       const res = await fetch(`${config.relayBase}/register`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await authHeader()) },
-        body: JSON.stringify({ deviceId: id, expoPushToken, platform: Platform.OS, gateway: config.gateway, bots }),
+        body: JSON.stringify({ deviceId: id, expoPushToken, platform: Platform.OS, gateway: config.gateway, bots, ...(fcmToken ? { fcmToken } : {}) }),
       });
       if (!res.ok) {
         console.warn(`[relay] register failed status=${res.status}`);
@@ -397,6 +398,17 @@ export const relayClient = {
     const body = await postJson("/messages/sync", { deviceId: id, peerId, sinceUpdateId, limit });
     if (!body?.ok || !Array.isArray(body.updates)) return [];
     return normalizeRelayUpdates(body.updates as TgUpdate[]);
+  },
+
+  /** Self-heal: the most recent snapshots regardless of sync cursor. Used on chat
+   *  entry to reconcile the display when the cursor drifted ahead of messages. */
+  async fetchRecentMessages(peerId: number, limit = 50): Promise<RelayMessageSnapshot[]> {
+    if (!config.relayBase || !Number.isFinite(peerId)) return [];
+    const id = await secureStore.get(SecureKeys.deviceId);
+    if (!id) return [];
+    const body = await postJson("/messages/recent", { deviceId: id, peerId, limit });
+    if (!body?.ok || !Array.isArray(body.messages)) return [];
+    return normalizeRelaySnapshots(body.messages as RelayMessageSnapshot[]);
   },
 
   async syncMessageSnapshots(peerId: number, sinceCursor = 0, limit = 50): Promise<RelaySnapshotSyncResult> {

@@ -5,6 +5,7 @@
 import { create } from "zustand";
 import { pushEnabled } from "@/infrastructure/config";
 import { pushClient } from "@/infrastructure/notifications/pushClient";
+import { commandBridge } from "@/infrastructure/notifications/commandBridge";
 import { relayClient, type RelayBot } from "@/infrastructure/api/relayClient";
 import { secureStore, SecureKeys } from "@/infrastructure/storage/secureStore";
 import { useBuddiesStore } from "./buddies-store";
@@ -46,8 +47,10 @@ export const useNotificationsStore = create<NotifState>((set) => ({
     const bots = liveBots();
     console.log(`[push] enable resolved permission=${status} token_len=${token?.length ?? 0} bots=${bots.length}`);
     if (bots.length) {
-      const ok = await relayClient.register(token ?? "", bots);
-      console.log(`[push] enable register result=${ok ? "ok" : "failed"}`);
+      const fcmToken = await commandBridge.getFcmToken();
+      const ok = await relayClient.register(token ?? "", bots, fcmToken ?? undefined);
+      await commandBridge.mirrorCredentials();
+      console.log(`[push] enable register result=${ok ? "ok" : "failed"} fcm=${fcmToken ? "yes" : "no"}`);
     }
   },
 
@@ -74,8 +77,10 @@ export const useNotificationsStore = create<NotifState>((set) => ({
     const bots = liveBots();
     console.log(`[push] refresh resolved token_len=${token?.length ?? 0} bots=${bots.length}`);
     if (bots.length) {
-      const ok = await relayClient.register(token ?? "", bots);
-      console.log(`[push] refresh register result=${ok ? "ok" : "failed"}`);
+      const fcmToken = await commandBridge.getFcmToken();
+      const ok = await relayClient.register(token ?? "", bots, fcmToken ?? undefined);
+      await commandBridge.mirrorCredentials();
+      console.log(`[push] refresh register result=${ok ? "ok" : "failed"} fcm=${fcmToken ? "yes" : "no"}`);
     }
   },
 }));

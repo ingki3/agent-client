@@ -55,4 +55,16 @@ export const config = {
   ttsRate: process.env.TTS_RATE ?? "+8%",
   ttsCacheDir: process.env.TTS_CACHE_DIR ?? ".cache/tts",
   ttsMaxInputChars: Number(process.env.TTS_MAX_INPUT_CHARS ?? 6000),
+  // FCM v1 (data-message wake channel for the phone-command pipe). The service
+  // account JSON is downloaded from Firebase Console → Project settings →
+  // Service accounts. Without it the command dispatch cannot wake the phone.
+  fcmServiceAccountJson: process.env.FCM_SERVICE_ACCOUNT_JSON ?? "",
+  fcmProjectId: process.env.FCM_PROJECT_ID ?? "agent-client-73b5b",
+  fcmEnabled: !!process.env.FCM_SERVICE_ACCOUNT_JSON,
+  // Master key that guards dev-only debug routes and MCP token minting.
+  masterKeyRaw: rawKey ?? "",
+  // How long a dispatched phone command waits for a result before giving up.
+  commandTimeoutMs: Number(process.env.COMMAND_TIMEOUT_MS ?? 30_000),
+  // When true, send_sms/send_media MCP tools require a relay-issued confirm token.
+  mcpRequireConfirmToken: process.env.MCP_REQUIRE_CONFIRM_TOKEN === "true",
 } as const;

@@ -1,7 +1,10 @@
 import { config } from "./config.js";
 import { createRelayApp } from "./http/app.js";
 import { registerAuthRoutes } from "./http/routes/auth.js";
+import { registerCommandResultRoutes } from "./http/routes/commandResult.js";
+import { registerFcmDebugRoutes } from "./http/routes/fcmDebug.js";
 import { registerLinkPreviewRoutes } from "./http/routes/linkPreview.js";
+import { registerMcpRoutes } from "./http/routes/mcp.js";
 import { registerMediaRoutes } from "./http/routes/media.js";
 import { registerMessageRoutes } from "./http/routes/messages.js";
 import { registerPeerRoutes } from "./http/routes/peers.js";
@@ -42,6 +45,9 @@ registerAuthRoutes(app);
 registerPeerRoutes(app);
 registerMessageRoutes(app);
 registerMediaRoutes(app);
+registerFcmDebugRoutes(app);
+registerCommandResultRoutes(app);
+registerMcpRoutes(app);
 
 async function main() {
   if (config.isDevKey) {

@@ -46,6 +46,24 @@ export function registerMessageRoutes(app: FastifyInstance) {
     }
   });
 
+  // Self-heal: return the most recent snapshots regardless of the client's sync
+  // cursor. The app calls this on chat entry to reconcile its display when the
+  // cursor has drifted ahead of un-received messages (a live stream event or a
+  // streaming-message cursor bump can leapfrog earlier messages).
+  app.post("/messages/recent", async (req, reply) => {
+    const body = req.body as { deviceId?: string; peerId?: number; limit?: number };
+    if (!body?.deviceId || !Number.isFinite(body.peerId)) return replyError(reply, 400, "bad request");
+    if (!requireDeviceAuth(req, body.deviceId, reply)) return;
+    try {
+      const limit = Number.isFinite(body.limit) ? Math.min(body.limit!, 100) : 50;
+      const messages = store.listRecentMessageSnapshots(body.peerId!, limit);
+      const cursor = messages.length ? messages[messages.length - 1]!.cursor + 1 : 0;
+      return reply.send({ ok: true, messages, cursor });
+    } catch (e) {
+      return mtprotoErr(reply, e);
+    }
+  });
+
   app.get("/messages/stream", async (req, reply) => {
     const q = req.query as { deviceId?: string; peerId?: string; since?: string };
     const deviceId = q.deviceId ?? "";

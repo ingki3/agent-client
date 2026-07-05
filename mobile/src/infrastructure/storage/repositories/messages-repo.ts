@@ -234,9 +234,12 @@ export class MessagesRepository {
   }
 
   listByBuddy(buddyId: BuddyId, limit = 200): Message[] {
+    // The most recent `limit` messages, returned oldest-first for display.
+    // (Was ORDER BY created_at ASC LIMIT, which returned the OLDEST window and
+    //  froze the chat at the 200th message once a conversation grew past it.)
     return this.db
       .all<MessageRow>(
-        'SELECT * FROM messages WHERE buddy_id = ? ORDER BY created_at ASC LIMIT ?',
+        'SELECT * FROM (SELECT * FROM messages WHERE buddy_id = ? ORDER BY created_at DESC LIMIT ?) ORDER BY created_at ASC',
         [buddyId, limit],
       )
       .map(rowToMessage);
