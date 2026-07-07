@@ -55,32 +55,48 @@ function serverSeq(message: Message): number | null {
 }
 
 /**
- * Display order comparator — orders by the server message sequence, NOT by
- * createdAt. createdAt mixes two clocks: remote rows carry Telegram's
- * second-precision `date`, while optimistic local rows carry the phone's
- * millisecond wall clock. Sorting by that inverts a same-second question/reply
- * pair (the local row's sub-second millis beat the server row's truncated .000)
- * and misorders any pair under phone↔server clock skew. The server sequence has
- * neither failure mode: it is monotonic and single-sourced.
+ * Display order comparator.
  *
- * Not-yet-confirmed local rows (optimistic sends, queued/failed, system notices)
- * have no server sequence yet, so they sort after every confirmed row — the
- * tail, where the thing you just did belongs — ordered among themselves by
- * createdAt. Once the server assigns an id they snap into their true position.
+ * Two confirmed rows are ordered by the server message sequence, NOT by
+ * createdAt: createdAt mixes clocks (a remote row carries Telegram's
+ * second-precision `date`; an adopted local row keeps the phone's millisecond
+ * wall clock), so a createdAt sort inverts a same-second question/reply pair and
+ * misorders under phone↔server clock skew. The server sequence has neither
+ * failure mode — it is monotonic and single-sourced.
+ *
+ * A not-yet-confirmed local row (optimistic send, offline queue, a send that
+ * failed client-side) has no sequence yet, so it is placed CHRONOLOGICALLY by
+ * its createdAt against confirmed rows, at second granularity. A fresh send
+ * (createdAt ≈ now) naturally lands at the tail; a stale un-acked send from days
+ * ago stays back at its real time instead of masquerading as the newest message
+ * at the bottom. On a same-second tie the pending row — the question just asked —
+ * sorts before the confirmed reply.
  */
 export function compareMessagesForDisplay(a: Message, b: Message): number {
   const sa = serverSeq(a);
   const sb = serverSeq(b);
+
+  // Both confirmed → server sequence (immune to the mixed clocks in createdAt).
   if (sa !== null && sb !== null) {
     if (sa !== sb) return sa - sb;
-  } else if (sa !== null) {
-    return -1;
-  } else if (sb !== null) {
-    return 1;
-  } else if (a.createdAt !== b.createdAt) {
-    return a.createdAt - b.createdAt;
+    return a.clientMessageId.localeCompare(b.clientMessageId);
   }
-  return a.clientMessageId.localeCompare(b.clientMessageId);
+
+  // Both pending → creation order.
+  if (sa === null && sb === null) {
+    if (a.createdAt !== b.createdAt) return a.createdAt - b.createdAt;
+    return a.clientMessageId.localeCompare(b.clientMessageId);
+  }
+
+  // Exactly one pending → place it chronologically (by second) against the
+  // confirmed row; tie → the pending question sorts before the confirmed reply.
+  const pendingIsA = sa === null;
+  const pending = pendingIsA ? a : b;
+  const confirmed = pendingIsA ? b : a;
+  const pendingSec = Math.floor(pending.createdAt / 1000);
+  const confirmedSec = Math.floor(confirmed.createdAt / 1000);
+  const order = pendingSec !== confirmedSec ? pendingSec - confirmedSec : -1;
+  return pendingIsA ? order : -order;
 }
 
 export function sortConversationChronology(messages: Message[]): Message[] {
