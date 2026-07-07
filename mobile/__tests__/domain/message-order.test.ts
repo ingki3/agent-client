@@ -54,17 +54,44 @@ describe('sortConversationChronology', () => {
     expect(sortConversationChronology([answer, question]).map((m) => m.id)).toEqual(['8501', '8502']);
   });
 
-  it('parks a not-yet-confirmed local row at the tail, then snaps it into place once it has a server id', () => {
+  it('places a not-yet-confirmed local row chronologically, then snaps it into place once it has a server id', () => {
     const older = msg('8500', 'agent', 900_000);
     const later = msg('8502', 'agent', 1_100_000);
-    // While pending (id null) the just-typed message sits at the tail.
+    // Pending (id null) row is placed by its createdAt (1_000_000) BETWEEN the two
+    // confirmed rows — not stranded at the tail.
     const pending = localMsg('c-q', 'user', 1_000_000, null);
     expect(sortConversationChronology([older, later, pending]).map((m) => m.clientMessageId))
-      .toEqual(['8500', '8502', 'c-q']);
+      .toEqual(['8500', 'c-q', '8502']);
     // Once the send is confirmed with id 8501, it snaps between 8500 and 8502.
     const confirmed = { ...pending, id: '8501', status: 'sent' as const };
     expect(sortConversationChronology([older, later, confirmed]).map((m) => m.id))
       .toEqual(['8500', '8501', '8502']);
+  });
+
+  it('keeps a FRESH optimistic send at the tail (its createdAt is the newest)', () => {
+    const older1 = msg('8760', 'agent', 5_000_000);
+    const older2 = msg('8763', 'agent', 6_000_000);
+    const fresh = localMsg('fresh', 'user', 7_000_000, null); // just typed → newest
+    expect(sortConversationChronology([older1, fresh, older2]).map((m) => m.clientMessageId))
+      .toEqual(['8760', '8763', 'fresh']);
+  });
+
+  // Regression for the real report: a send that failed client-side two days ago
+  // (id null) actually reached Telegram, but the local row stayed un-acked. It
+  // must NOT float to the bottom as if it were the newest message.
+  it('does not strand a stale un-acked local send at the tail', () => {
+    const stale = localMsg('stale-kbo', 'user', 1_000_000, null); // old createdAt
+    const today1 = msg('8760', 'agent', 5_000_000);
+    const today2 = msg('8763', 'agent', 6_000_000);
+    expect(sortConversationChronology([today1, today2, stale]).map((m) => m.clientMessageId))
+      .toEqual(['stale-kbo', '8760', '8763']);
+  });
+
+  it('places a pending question before a same-second confirmed reply', () => {
+    const q = localMsg('q', 'user', 1_000_400, null); // pending, sub-second
+    const reply = msg('8502', 'agent', 1_000_000); // confirmed reply, same second
+    expect(sortConversationChronology([reply, q]).map((m) => m.clientMessageId))
+      .toEqual(['q', '8502']);
   });
 
   it('orders multiple pending rows among themselves by createdAt (offline queue)', () => {
