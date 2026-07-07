@@ -46,7 +46,7 @@ export const config = {
   llmModel: process.env.LLM_MODEL ?? process.env.HELPER_MODEL ?? "gemini-3.5-flash",
   llmMaxTokens: Number(process.env.LLM_MAX_TOKENS ?? 32000),
   llmHelperMaxTokens: Number(process.env.LLM_HELPER_MAX_TOKENS ?? 1024),
-  llmTtsMaxTokens: Number(process.env.LLM_TTS_MAX_TOKENS ?? 2048),
+  llmTtsMaxTokens: Number(process.env.LLM_TTS_MAX_TOKENS ?? 4096),
   llmConcurrency,
   ttsEnabled,
   ttsProvider: process.env.TTS_PROVIDER ?? "edge-tts",
