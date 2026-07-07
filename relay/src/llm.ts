@@ -176,3 +176,47 @@ export async function chatJson<T>(params: {
   }
   return params.fallback;
 }
+
+/**
+ * Plain-text completion. Use this when the model's whole answer IS the output
+ * (e.g. a TTS script) — wrapping such text in JSON is fragile: a long answer
+ * that hits max_tokens leaves the JSON string unterminated, and any literal
+ * newline in the value makes JSON.parse throw. Returning the raw content sidesteps
+ * both, and a truncated plain answer is still usable text.
+ */
+export async function chatText(params: {
+  messages: ChatMessage[];
+  temperature?: number;
+  maxTokens?: number;
+  timeoutMs?: number;
+  label: string;
+}): Promise<string | null> {
+  const temperature = params.temperature ?? 0.1;
+  const maxTokens = params.maxTokens ?? config.llmMaxTokens;
+  const timeoutMs = params.timeoutMs ?? 30000;
+  try {
+    const res = await postChatCompletionWithRetry({
+      messages: params.messages,
+      temperature,
+      maxTokens,
+      timeoutMs,
+      jsonObject: false,
+      label: params.label,
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      log.warn(`${params.label} llm failed status=${res.status} model=${config.llmModel} ${body.slice(0, 240)}`);
+      return null;
+    }
+    const body = (await res.json()) as ChatCompletionResponse;
+    const content = body.choices?.[0]?.message?.content ?? body.choices?.[0]?.text;
+    if (!content) {
+      log.warn(`${params.label} llm returned empty content model=${config.llmModel}`);
+      return null;
+    }
+    return stripThinking(content).trim() || null;
+  } catch (e) {
+    log.warn(`${params.label} llm error model=${config.llmModel}: ${(e as { message?: string })?.message ?? String(e)}`);
+    return null;
+  }
+}

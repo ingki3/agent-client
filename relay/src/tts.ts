@@ -3,19 +3,9 @@ import { spawn } from "node:child_process";
 import { mkdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { config } from "./config.js";
-import { chatJson } from "./llm.js";
+import { chatText } from "./llm.js";
 import { log } from "./log.js";
 import type { TtsMode } from "./types.js";
-
-type ScriptEnvelope = { script?: string };
-
-const scriptSchema = {
-  type: "object",
-  properties: {
-    script: { type: "string" },
-  },
-  required: ["script"],
-};
 
 function limit(input: string, max: number): string {
   const text = input.trim();
@@ -78,9 +68,12 @@ export function buildTtsScriptPrompt(text: string, mode: TtsMode): string {
 
 async function generateScriptWithLlm(text: string, mode: TtsMode): Promise<string | null> {
   const prompt = buildTtsScriptPrompt(text, mode);
-  const parsed = await chatJson<ScriptEnvelope>({
+  // Plain text, not JSON: the script is often long and multi-paragraph, and a
+  // JSON envelope broke on both max_tokens truncation (unterminated string) and
+  // literal newlines — the parse failure then silently fell back to reading the
+  // raw document aloud, which is exactly the "just reads the text" awkwardness.
+  const content = await chatText({
     label: "tts script",
-    fallback: {},
     timeoutMs: 30000,
     temperature: 0.1,
     maxTokens: config.llmTtsMaxTokens,
@@ -88,18 +81,14 @@ async function generateScriptWithLlm(text: string, mode: TtsMode): Promise<strin
       {
         role: "system",
         content: [
-          "/no_think",
           "You create Korean text-to-speech scripts.",
-          "Return ONLY valid JSON. Do not wrap it in markdown.",
-          "Do not explain your reasoning. Do not include analysis text.",
-          "The JSON must match this schema:",
-          JSON.stringify(scriptSchema),
+          "Return ONLY the spoken script text itself — no JSON, no markdown, no quotation marks, no preamble or sign-off like '네, 스크립트입니다'.",
         ].join("\n"),
       },
       { role: "user", content: prompt },
     ],
   });
-  return typeof parsed.script === "string" ? stripForSpeech(parsed.script) : null;
+  return content ? stripForSpeech(content) : null;
 }
 
 export async function createTtsScript(input: { text: string; mode: TtsMode }): Promise<string> {
