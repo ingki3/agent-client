@@ -32,6 +32,7 @@ import { useBuddiesStore } from '@/application/stores/buddies-store';
 import { useChatStore } from '@/application/stores/chat-store';
 import { useNetworkStore } from '@/application/stores/network-store';
 import type { Message } from '@/domain/entities/Message';
+import { sortConversationChronology } from '@/domain/messages/duplicateMessages';
 import { ChatBubbleV2, ChatComposer, OfflineBanner, useChatAutoScroll } from '@/ui/chat';
 import { useTheme } from '@/ui/theme/ThemeProvider';
 import { fontSize, radius, space, touch } from '@/ui/theme/tokens';
@@ -62,8 +63,16 @@ export default function ChatScreen() {
   const messagesMap = useChatStore((s) => s.messages);
   const isOnline = useNetworkStore((s) => s.isOnline);
 
+  // Sort at the render boundary — the store's byBuddy array is a membership set
+  // whose order is only approximate (appendMessage tacks live/streamed rows onto
+  // the tail, and adoption reassigns a row's server id in place). Re-deriving the
+  // order here from the message objects keeps the displayed sequence correct
+  // regardless of insertion order or id updates.
   const messages = useMemo(
-    () => messageIds.map((id_) => messagesMap[id_]).filter((m): m is Message => Boolean(m)),
+    () =>
+      sortConversationChronology(
+        messageIds.map((id_) => messagesMap[id_]).filter((m): m is Message => Boolean(m)),
+      ),
     [messageIds, messagesMap],
   );
 

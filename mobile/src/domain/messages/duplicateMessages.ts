@@ -41,19 +41,50 @@ export function filterLikelyDuplicateMessages(messages: Message[]): Message[] {
 }
 
 /**
- * Chronological order for display. createdAt is Telegram's second-precision
- * date, so same-second messages (e.g. a user question and the agent's instant
- * reply) tie — break the tie by the numeric server message id so a reply never
- * sorts above the message it answers.
+ * Numeric server sequence for a row, or null when it is a not-yet-confirmed
+ * local row. Telegram assigns every message in a conversation (the user's and
+ * the agent's alike) a monotonically increasing message_id, so this sequence —
+ * not the wall clock — is the true send order. Remote/adopted rows carry it as
+ * `id`; a purely local row's `id` is null (in memory) or the non-numeric
+ * clientMessageId (once persisted, insert() falls back to it for the PK).
  */
+function serverSeq(message: Message): number | null {
+  if (message.id == null) return null;
+  const n = Number(message.id);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * Display order comparator — orders by the server message sequence, NOT by
+ * createdAt. createdAt mixes two clocks: remote rows carry Telegram's
+ * second-precision `date`, while optimistic local rows carry the phone's
+ * millisecond wall clock. Sorting by that inverts a same-second question/reply
+ * pair (the local row's sub-second millis beat the server row's truncated .000)
+ * and misorders any pair under phone↔server clock skew. The server sequence has
+ * neither failure mode: it is monotonic and single-sourced.
+ *
+ * Not-yet-confirmed local rows (optimistic sends, queued/failed, system notices)
+ * have no server sequence yet, so they sort after every confirmed row — the
+ * tail, where the thing you just did belongs — ordered among themselves by
+ * createdAt. Once the server assigns an id they snap into their true position.
+ */
+export function compareMessagesForDisplay(a: Message, b: Message): number {
+  const sa = serverSeq(a);
+  const sb = serverSeq(b);
+  if (sa !== null && sb !== null) {
+    if (sa !== sb) return sa - sb;
+  } else if (sa !== null) {
+    return -1;
+  } else if (sb !== null) {
+    return 1;
+  } else if (a.createdAt !== b.createdAt) {
+    return a.createdAt - b.createdAt;
+  }
+  return a.clientMessageId.localeCompare(b.clientMessageId);
+}
+
 export function sortConversationChronology(messages: Message[]): Message[] {
-  return [...messages].sort((a, b) => {
-    if (a.createdAt !== b.createdAt) return a.createdAt - b.createdAt;
-    const aId = Number(a.id ?? a.clientMessageId);
-    const bId = Number(b.id ?? b.clientMessageId);
-    if (Number.isFinite(aId) && Number.isFinite(bId) && aId !== bId) return aId - bId;
-    return a.clientMessageId.localeCompare(b.clientMessageId);
-  });
+  return [...messages].sort(compareMessagesForDisplay);
 }
 
 /**
