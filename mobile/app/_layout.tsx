@@ -47,7 +47,9 @@ export default function RootLayout() {
   const authStatus = useAuthStore((s) => s.status);
   const [runtimeReady, setRuntimeReady] = useState(false);
   const router = useRouter();
+  const segments = useSegments();
   const coldStartHandled = useRef(false);
+  const [pendingPushTarget, setPendingPushTarget] = useState<string | null>(null);
 
   useEffect(() => {
     void (async () => {
@@ -65,26 +67,37 @@ export default function RootLayout() {
     });
   }, [bootstrap]);
 
-  // Push tap → land in the corresponding chat room. Without this, tapping a push
-  // just cold-starts the app at the default landing (/(main)/buddies), so the
-  // user ends up somewhere other than the conversation the push was about.
+  // Push tap → land in the corresponding chat room. Split into capture + navigate
+  // so a cold-start tap is not lost: on cold start getLastResponseData() can
+  // resolve BEFORE the root navigator mounts, and calling router.push() then
+  // throws "navigate before mounting the Root Layout" — which the old .catch()
+  // swallowed, dropping the deep link (warm taps worked only because the root was
+  // already mounted). We instead stash the target and navigate once we've settled
+  // into the (main) group (which also avoids the protected-route redirect to
+  // /(main)/buddies clobbering the push).
   useEffect(() => {
     if (!runtimeReady || authStatus !== 'auth') return;
 
-    const openChatFromPush = (data: NotifData | null) => {
+    const capture = (data: NotifData | null) => {
       const target = data?.buddyId ?? (data?.chatId != null ? String(data.chatId) : null);
-      if (target) router.push(`/chat/${target}`);
+      if (target) setPendingPushTarget(target);
     };
 
     // Cold start: the tap that launched the app (consume once per session).
     if (!coldStartHandled.current) {
       coldStartHandled.current = true;
-      void pushClient.getLastResponseData().then(openChatFromPush).catch(() => undefined);
+      void pushClient.getLastResponseData().then(capture).catch(() => undefined);
     }
 
     // Warm: a tap while the app is already running.
-    return pushClient.addResponseListener(openChatFromPush);
-  }, [runtimeReady, authStatus, router]);
+    return pushClient.addResponseListener(capture);
+  }, [runtimeReady, authStatus]);
+
+  useEffect(() => {
+    if (!pendingPushTarget || authStatus !== 'auth' || segments[0] !== '(main)') return;
+    router.push(`/chat/${pendingPushTarget}`);
+    setPendingPushTarget(null);
+  }, [pendingPushTarget, authStatus, segments, router]);
 
   useEffect(() => {
     if (!runtimeReady || authStatus !== 'auth') return;
