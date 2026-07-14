@@ -50,6 +50,14 @@ import {
 } from '../../_runtime/chat';
 import { useChatAttachments } from './useChatAttachments';
 
+// FlashList v2's native chat anchor. startRenderingFromBottom lands the initial
+// render at the newest message (no scroll-after-mount dance), and the bottom
+// threshold keeps the view pinned through new messages / late image loads while
+// the user is near the bottom. 0.3 × viewport comfortably exceeds the composer
+// overlay height that the bound-check's contentLength excludes.
+// Module-level constant: FlashList keys internal state off the prop reference.
+const MVCP = { startRenderingFromBottom: true, autoscrollToBottomThreshold: 0.3 } as const;
+
 export default function ChatScreen() {
   const { color } = useTheme();
   const insets = useSafeAreaInsets();
@@ -80,7 +88,7 @@ export default function ChatScreen() {
   const [keyboardInset, setKeyboardInset] = useState(0);
   const [composerHeight, setComposerHeight] = useState(0);
   const [sending, setSending] = useState(false);
-  const { listRef, scrollToLatest, handleScroll } = useChatAutoScroll(messages);
+  const { listRef, scrollToLatest } = useChatAutoScroll(messages);
   const {
     attaching,
     pendingAttachments,
@@ -93,18 +101,27 @@ export default function ChatScreen() {
   });
   const headerHeight = useHeaderHeight();
 
-  // Boot the runtime + hydrate SQLite history once per screen mount.
+  // Boot the runtime + hydrate SQLite history once per screen mount. No manual
+  // scroll here: startRenderingFromBottom (MVCP) makes the initial render land
+  // on the newest message.
   useEffect(() => {
     if (!buddyId) return;
     initChatRuntime();
     hydrateChatScreen(buddyId);
     markBuddyRead(buddyId);
-    scrollToLatest(false);
     // Self-heal any messages stranded by cursor drift (fire-and-forget).
     void backfillRecentMessagesFlow(buddyId);
     const stop = startPolling(buddyId);
     return () => stop();
-  }, [buddyId, scrollToLatest]);
+  }, [buddyId]);
+
+  // A push-tap can retarget this mounted screen to another room (router.navigate
+  // updates params in place) — the draft and staged attachments belong to the
+  // previous conversation, not the new one.
+  useEffect(() => {
+    setDraft('');
+    clearPendingAttachments();
+  }, [buddyId, clearPendingAttachments]);
 
   useEffect(() => {
     if (Platform.OS !== 'android') return undefined;
@@ -274,8 +291,7 @@ export default function ChatScreen() {
           ref={listRef}
           data={messages}
           keyExtractor={(m) => m.clientMessageId}
-          onScroll={handleScroll}
-          scrollEventThrottle={100}
+          maintainVisibleContentPosition={MVCP}
           renderItem={({ item }) => (
             <ChatBubbleV2 message={item} onLongPress={handleLongPress} />
           )}
