@@ -88,7 +88,8 @@ export default function ChatScreen() {
   const [keyboardInset, setKeyboardInset] = useState(0);
   const [composerHeight, setComposerHeight] = useState(0);
   const [sending, setSending] = useState(false);
-  const { listRef, scrollToLatest } = useChatAutoScroll(messages);
+  const { listRef, scrollToLatest, handleListLoad, handleScrollBeginDrag } =
+    useChatAutoScroll(messages, buddyId);
   const {
     attaching,
     pendingAttachments,
@@ -292,6 +293,8 @@ export default function ChatScreen() {
           data={messages}
           keyExtractor={(m) => m.clientMessageId}
           maintainVisibleContentPosition={MVCP}
+          onLoad={handleListLoad}
+          onScrollBeginDrag={handleScrollBeginDrag}
           renderItem={({ item }) => (
             <ChatBubbleV2 message={item} onLongPress={handleLongPress} />
           )}
