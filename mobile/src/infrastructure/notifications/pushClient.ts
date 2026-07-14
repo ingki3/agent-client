@@ -9,17 +9,23 @@ import * as Notifications from "expo-notifications";
 import { easProjectId } from "@/infrastructure/config";
 
 // Foreground: show the banner + bump the badge (so an open app still surfaces it).
+// The relay pairs every display push with a silent data-only companion (it wakes
+// the background preload task) — never render that one.
 Notifications.setNotificationHandler({
-	  handleNotification: async () => ({
-	    shouldShowAlert: true,
-	    shouldShowBanner: true,
-	    shouldShowList: true,
-	    shouldPlaySound: true,
-	    shouldSetBadge: true,
-	  }),
+	  handleNotification: async (notification) => {
+	    const data = notification.request.content.data as NotifData | undefined;
+	    const silent = data?.silent === true;
+	    return {
+	      shouldShowAlert: !silent,
+	      shouldShowBanner: !silent,
+	      shouldShowList: !silent,
+	      shouldPlaySound: !silent,
+	      shouldSetBadge: !silent,
+	    };
+	  },
 });
 
-export type NotifData = { buddyId?: string; chatId?: number; updateId?: number };
+export type NotifData = { buddyId?: string; chatId?: number; updateId?: number; silent?: boolean };
 
 export const pushClient = {
   async getPermissionStatus(): Promise<Notifications.PermissionStatus> {

@@ -15,6 +15,7 @@ import { ThemeProvider, useTheme } from '@/ui/theme/ThemeProvider';
 import { initBuddiesRuntime, syncRelayPeersToLocal } from './_runtime/buddies';
 import { initChatRuntime } from './_runtime/chat';
 import { initNetworkRuntime } from './_runtime/network';
+import { preloadMessagesForPush, registerPushPreloadTask } from './_runtime/pushPreload';
 
 function useProtectedRoute() {
   const status = useAuthStore((s) => s.status);
@@ -91,6 +92,17 @@ export default function RootLayout() {
 
     // Warm: a tap while the app is already running.
     return pushClient.addResponseListener(capture);
+  }, [runtimeReady, authStatus]);
+
+  // Pre-load pushed messages on ARRIVAL (not on tap): foreground listener here,
+  // background/terminated via the task in _runtime/pushPreload (registered
+  // once). Entering the room then reads the message straight from SQLite.
+  useEffect(() => {
+    if (!runtimeReady || authStatus !== 'auth') return;
+    void registerPushPreloadTask();
+    return pushClient.addForegroundListener((data) => {
+      void preloadMessagesForPush(data);
+    });
   }, [runtimeReady, authStatus]);
 
   useEffect(() => {
