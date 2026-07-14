@@ -95,7 +95,10 @@ export default function RootLayout() {
 
   useEffect(() => {
     if (!pendingPushTarget || authStatus !== 'auth' || segments[0] !== '(main)') return;
-    router.push(`/chat/${pendingPushTarget}`);
+    // navigate, not push: tapping a notification for the room already on screen
+    // must not stack a duplicate chat screen (push always stacks; navigate
+    // dedupes the same route+params and retargets params for a different room).
+    router.navigate(`/chat/${pendingPushTarget}`);
     setPendingPushTarget(null);
   }, [pendingPushTarget, authStatus, segments, router]);
 
