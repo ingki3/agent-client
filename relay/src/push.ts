@@ -31,6 +31,19 @@ export async function sendPushes(items: PushItem[]): Promise<void> {
       priority: "high",
       data: { buddyId: it.buddyId, updateId: it.updateId, chatId: it.m.chat.id },
     });
+    // Silent data-only companion: the display push above is a notification-message,
+    // which Android's system tray shows WITHOUT waking the app's JS when it is
+    // backgrounded/terminated. This one has no title/body, so it is delivered
+    // straight to the app's background notification task, which pre-syncs the
+    // room's messages into local storage — opening the chat from the notification
+    // then shows the new message instantly. `silent: true` tells the app's
+    // foreground handler to never render it.
+    messages.push({
+      to: it.expoPushToken,
+      priority: "high",
+      _contentAvailable: true,
+      data: { buddyId: it.buddyId, updateId: it.updateId, chatId: it.m.chat.id, silent: true },
+    });
   }
   if (messages.length === 0) {
     log.info(`push skipped total=${items.length} invalid_or_empty_token=${skippedInvalidToken}`);
